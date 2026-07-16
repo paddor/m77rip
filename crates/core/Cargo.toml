@@ -1,0 +1,13 @@
+[package]
+name = "m77rip-core"
+description = "Shared types and constants for m77rip encode/decode crates"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.89"
+license = "MIT"
+repository = "https://github.com/paddor/m77rip"
+
+[features]
+default = ["std"]
+std = []
+paranoid = []

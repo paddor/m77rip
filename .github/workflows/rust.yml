@@ -1,0 +1,53 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  test:
+    name: cargo test (${{ matrix.os }}, ${{ matrix.toolchain }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        toolchain: [stable, "1.89"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ matrix.toolchain }}
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --workspace --lib --tests
+      - run: cargo test --workspace --lib --tests --features paranoid
+
+  lint:
+    name: fmt + clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo +nightly fmt --all -- --check
+      - run: cargo +nightly clippy --workspace --lib --tests
+      - run: cargo +nightly clippy --workspace --lib --tests --features paranoid
+
+  ci-success:
+    name: CI success
+    needs: [test, lint]
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: check all jobs passed
+        run: |
+          if [[ '${{ toJSON(needs.*.result) }}' =~ (failure|cancelled) ]]; then
+            exit 1
+          fi

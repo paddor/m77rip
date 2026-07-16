@@ -1,0 +1,17 @@
+[package]
+name = "m77rip-encode"
+description = "misa77 block compression for m77rip"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.89"
+license = "MIT"
+repository = "https://github.com/paddor/m77rip"
+
+[features]
+default = ["std"]
+std = ["m77rip-core/std"]
+paranoid = ["m77rip-core/paranoid"]
+
+[dependencies]
+m77rip-core = { version = "0.1.0", path = "../core", default-features = false }
+fearless_simd = "0.6.0"

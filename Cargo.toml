@@ -1,0 +1,46 @@
+[workspace]
+members = [".", "crates/core", "crates/encode", "crates/decode"]
+resolver = "3"
+
+[package]
+name = "m77rip"
+description = "Fast, memory-safe Rust encoder and decoder for the misa77 compression format"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.89"
+license = "MIT"
+repository = "https://github.com/paddor/m77rip"
+readme = "README.md"
+keywords = ["compression", "misa77", "compress", "decompress", "decompression"]
+categories = ["compression"]
+
+[features]
+default = ["std"]
+std = ["alloc", "m77rip-core/std", "m77rip-encode/std", "m77rip-decode/std"]
+alloc = ["m77rip-decode/alloc"]
+c-reference = ["dep:cc"]
+paranoid = ["m77rip-core/paranoid", "m77rip-encode/paranoid", "m77rip-decode/paranoid"]
+
+[dependencies]
+m77rip-core = { version = "0.1.0", path = "crates/core", default-features = false }
+m77rip-encode = { version = "0.1.0", path = "crates/encode", default-features = false }
+m77rip-decode = { version = "0.1.0", path = "crates/decode", default-features = false }
+
+[build-dependencies]
+cc = { version = "1", optional = true }
+
+[dev-dependencies]
+proptest = "1.0.0"
+libc = "0.2"
+
+[profile.release]
+codegen-units = 1
+opt-level = 3
+
+[[example]]
+name = "m77rip_bench"
+required-features = ["c-reference"]
+
+[[example]]
+name = "profile_decompress"
+required-features = ["c-reference"]

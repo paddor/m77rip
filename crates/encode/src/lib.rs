@@ -1,0 +1,24 @@
+#![deny(unsafe_op_in_unsafe_fn)]
+#![cfg_attr(feature = "paranoid", forbid(unsafe_code))]
+
+#[cfg(not(feature = "paranoid"))]
+#[allow(unused_macros)]
+macro_rules! paranoid_unsafe_call {
+    ($e:expr) => {
+        // SAFETY: This macro is retained for parity with the decoder. Encoder
+        // code currently has no unsafe call sites.
+        unsafe { $e }
+    };
+}
+
+#[cfg(feature = "paranoid")]
+#[allow(unused_macros)]
+macro_rules! paranoid_unsafe_call {
+    ($e:expr) => {
+        $e
+    };
+}
+
+mod encode;
+
+pub use encode::{compress, compress_bound, compress_into, compress_into_level, compress_level};

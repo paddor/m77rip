@@ -1,0 +1,18 @@
+[package]
+name = "m77rip-decode"
+description = "misa77 block decompression for m77rip"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.89"
+license = "MIT"
+repository = "https://github.com/paddor/m77rip"
+
+[features]
+default = ["std"]
+std = ["alloc", "m77rip-core/std", "fearless_simd/std"]
+alloc = []
+paranoid = ["m77rip-core/paranoid"]
+
+[dependencies]
+m77rip-core = { version = "0.1.0", path = "../core", default-features = false }
+fearless_simd = { version = "0.6.0", default-features = false, features = ["libm"] }

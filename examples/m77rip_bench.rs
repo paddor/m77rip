@@ -1,0 +1,565 @@
+#![deny(unsafe_op_in_unsafe_fn)]
+
+extern crate libc;
+
+use std::io::Write;
+use std::path::PathBuf;
+use std::process::Command;
+
+// SAFETY: These declarations match the C wrapper ABI. Calls validate pointer
+// lifetimes and capacities at each call site below.
+unsafe extern "C" {
+    fn misa77_compress_bound(src_size: u64) -> u64;
+    fn misa77_compress(src: *const u8, src_size: u64, dst: *mut u8, dst_cap: u64, level: u8)
+    -> u64;
+    fn misa77_decompress(src: *const u8, src_size: u64, dst: *mut u8, dst_cap: u64) -> u64;
+}
+
+fn cpu_nanos() -> u64 {
+    let mut ts = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    // SAFETY: `ts` is a valid writable pointer to initialized storage.
+    unsafe { libc::clock_gettime(libc::CLOCK_PROCESS_CPUTIME_ID, &mut ts) };
+    ts.tv_sec as u64 * 1_000_000_000 + ts.tv_nsec as u64
+}
+
+#[derive(Clone)]
+struct BenchResult {
+    codec: String,
+    input_name: String,
+    input_size: usize,
+    compressed_size: usize,
+    compress_ns: f64,
+    decompress_ns: f64,
+}
+
+impl BenchResult {
+    fn to_json(&self) -> String {
+        format!(
+            r#"{{"codec": "{}", "input": "{}", "input_size": {}, "compressed_size": {}, "compress_ns": {:.1}, "decompress_ns": {:.1}}}"#,
+            self.codec,
+            self.input_name,
+            self.input_size,
+            self.compressed_size,
+            self.compress_ns,
+            self.decompress_ns
+        )
+    }
+
+    fn from_json(line: &str) -> Option<Self> {
+        let line = line.trim().trim_matches(',');
+        if line == "[" || line == "]" || line.is_empty() {
+            return None;
+        }
+        let get = |key: &str| -> Option<String> {
+            let prefix = format!("\"{key}\": ");
+            let start = line.find(&prefix)? + prefix.len();
+            let rest = &line[start..];
+            if let Some(stripped) = rest.strip_prefix('"') {
+                let end = stripped.find('"')?;
+                Some(stripped[..end].to_string())
+            } else {
+                let end = rest.find([',', '}']).unwrap_or(rest.len());
+                Some(rest[..end].to_string())
+            }
+        };
+        Some(BenchResult {
+            codec: get("codec")?,
+            input_name: get("input")?,
+            input_size: get("input_size")?.parse().ok()?,
+            compressed_size: get("compressed_size")?.parse().ok()?,
+            compress_ns: get("compress_ns")?.parse().ok()?,
+            decompress_ns: get("decompress_ns")?.parse().ok()?,
+        })
+    }
+}
+
+fn bench_loop<F: FnMut()>(warmup: usize, target_ns: u64, rounds: usize, mut f: F) -> f64 {
+    for _ in 0..warmup {
+        f();
+    }
+    let mut best = f64::MAX;
+    for _ in 0..rounds {
+        let mut iters = 0u64;
+        let start = cpu_nanos();
+        loop {
+            std::hint::black_box(&mut f)();
+            iters += 1;
+            if cpu_nanos() - start >= target_ns {
+                break;
+            }
+        }
+        let elapsed = cpu_nanos() - start;
+        let ns_per_op = elapsed as f64 / iters as f64;
+        if ns_per_op < best {
+            best = ns_per_op;
+        }
+    }
+    best
+}
+
+fn c_misa77_compress(data: &[u8], level: u8) -> Vec<u8> {
+    // SAFETY: C function has no pointer arguments and accepts any u64 size.
+    let bound = unsafe { misa77_compress_bound(data.len() as u64) } as usize;
+    let mut out = vec![0u8; bound];
+    // SAFETY: Pointers come from live borrowed slices. `out` has the bound
+    // capacity passed to the C compressor.
+    let written = unsafe {
+        misa77_compress(
+            data.as_ptr(),
+            data.len() as u64,
+            out.as_mut_ptr(),
+            out.len() as u64,
+            level,
+        )
+    } as usize;
+    assert!(written > 0, "C++ misa77 compress failed");
+    out.truncate(written);
+    out
+}
+
+#[allow(dead_code)]
+fn c_misa77_decompress(compressed: &[u8], original_size: usize) -> Vec<u8> {
+    let mut out = vec![0u8; original_size];
+    // SAFETY: Pointers come from live benchmark buffers with matching lengths
+    // and capacities.
+    let written = unsafe {
+        misa77_decompress(
+            compressed.as_ptr(),
+            compressed.len() as u64,
+            out.as_mut_ptr(),
+            out.len() as u64,
+        )
+    } as usize;
+    assert_eq!(
+        written, original_size,
+        "C++ misa77 decompress size mismatch"
+    );
+    out
+}
+
+fn bench_c_misa77(data: &[u8], name: &str, target_ns: u64, level: u8) -> BenchResult {
+    let compressed = c_misa77_compress(data, level);
+    let mut decomp_buf = vec![0u8; data.len()];
+
+    let compress_ns = {
+        // SAFETY: C function has no pointer arguments and accepts any u64 size.
+        let bound = unsafe { misa77_compress_bound(data.len() as u64) } as usize;
+        let mut comp_buf = vec![0u8; bound];
+        // SAFETY: Pointers reference live benchmark buffers with matching
+        // lengths and capacities.
+        bench_loop(3, target_ns, 10, || unsafe {
+            misa77_compress(
+                data.as_ptr(),
+                data.len() as u64,
+                comp_buf.as_mut_ptr(),
+                comp_buf.len() as u64,
+                level,
+            );
+        })
+    };
+
+    // SAFETY: Pointers reference live benchmark buffers with matching lengths
+    // and capacities.
+    let decompress_ns = bench_loop(3, target_ns, 10, || unsafe {
+        misa77_decompress(
+            compressed.as_ptr(),
+            compressed.len() as u64,
+            decomp_buf.as_mut_ptr(),
+            decomp_buf.len() as u64,
+        );
+    });
+
+    BenchResult {
+        codec: format!("C++ misa77 -{level}"),
+        input_name: name.to_string(),
+        input_size: data.len(),
+        compressed_size: compressed.len(),
+        compress_ns,
+        decompress_ns,
+    }
+}
+
+fn bench_m77rip_compress(data: &[u8], name: &str, target_ns: u64, level: u8) -> BenchResult {
+    let compressed = m77rip::compress_level(data, level).unwrap();
+
+    // Verify roundtrip
+    let decompressed = m77rip::decompress(&compressed, data.len()).unwrap();
+    assert_eq!(
+        &decompressed, data,
+        "m77rip compress-{level} roundtrip mismatch on {name}"
+    );
+
+    let mut comp_buf = vec![0u8; m77rip::compress_bound(data.len())];
+    let compress_ns = bench_loop(3, target_ns, 10, || {
+        let _ = m77rip::compress_into_level(
+            std::hint::black_box(data),
+            std::hint::black_box(&mut comp_buf),
+            level,
+        );
+    });
+
+    BenchResult {
+        codec: format!("m77rip compress -{level}"),
+        input_name: name.to_string(),
+        input_size: data.len(),
+        compressed_size: compressed.len(),
+        compress_ns,
+        decompress_ns: 0.0,
+    }
+}
+
+fn bench_m77rip(data: &[u8], name: &str, target_ns: u64, level: u8) -> BenchResult {
+    // Use the C++ compressor for realistic compressed data
+    let compressed = c_misa77_compress(data, level);
+    let original_size = data.len();
+    let mut decomp_buf = vec![0u8; original_size];
+
+    // Verify our decoder produces correct output
+    let result = m77rip::decompress(&compressed, original_size).unwrap();
+    assert_eq!(&result, data, "m77rip decompress mismatch on {name}");
+
+    let decompress_ns = bench_loop(3, target_ns, 10, || {
+        let _ = m77rip::decompress_into(
+            std::hint::black_box(&compressed),
+            std::hint::black_box(&mut decomp_buf),
+        );
+    });
+
+    BenchResult {
+        codec: format!("m77rip (from -{level})"),
+        input_name: name.to_string(),
+        input_size: data.len(),
+        compressed_size: compressed.len(),
+        compress_ns: 0.0,
+        decompress_ns,
+    }
+}
+
+fn arch() -> &'static str {
+    std::env::consts::ARCH
+}
+
+fn cache_dir() -> PathBuf {
+    let dir = PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| ".".into()))
+        .join(".cache")
+        .join("m77rip")
+        .join(arch());
+    std::fs::create_dir_all(&dir).ok();
+    dir
+}
+
+fn codec_cache_path(codec: &str) -> PathBuf {
+    let filename = codec.replace(' ', "_").replace(['(', ')'], "");
+    cache_dir().join(format!("{filename}.jsonl"))
+}
+
+fn load_cache(codecs: &[&str]) -> Vec<BenchResult> {
+    let mut results = Vec::new();
+    for codec in codecs {
+        let path = codec_cache_path(codec);
+        let content = match std::fs::read_to_string(&path) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+        results.extend(content.lines().filter_map(BenchResult::from_json));
+    }
+    results
+}
+
+fn save_cache(results: &[BenchResult], codecs: &[&str]) {
+    for codec in codecs {
+        let entries: Vec<_> = results.iter().filter(|r| r.codec == *codec).collect();
+        if entries.is_empty() {
+            continue;
+        }
+        let path = codec_cache_path(codec);
+        let mut f = std::fs::File::create(&path).unwrap();
+        for r in &entries {
+            writeln!(f, "{}", r.to_json()).unwrap();
+        }
+        eprintln!("cached {} results to {}", entries.len(), path.display());
+    }
+}
+
+const SILESIA_DOWNLOADS: &[(&str, &str)] = &[
+    (
+        "corpus/silesia/dickens",
+        "https://sun.aei.polsl.pl/~sdeor/corpus/dickens.bz2",
+    ),
+    (
+        "corpus/silesia/mozilla",
+        "https://sun.aei.polsl.pl/~sdeor/corpus/mozilla.bz2",
+    ),
+    (
+        "corpus/silesia/mr",
+        "https://sun.aei.polsl.pl/~sdeor/corpus/mr.bz2",
+    ),
+    (
+        "corpus/silesia/nci",
+        "https://sun.aei.polsl.pl/~sdeor/corpus/nci.bz2",
+    ),
+    (
+        "corpus/silesia/ooffice",
+        "https://sun.aei.polsl.pl/~sdeor/corpus/ooffice.bz2",
+    ),
+    (
+        "corpus/silesia/osdb",
+        "https://sun.aei.polsl.pl/~sdeor/corpus/osdb.bz2",
+    ),
+    (
+        "corpus/silesia/reymont",
+        "https://sun.aei.polsl.pl/~sdeor/corpus/reymont.bz2",
+    ),
+    (
+        "corpus/silesia/samba",
+        "https://sun.aei.polsl.pl/~sdeor/corpus/samba.bz2",
+    ),
+    (
+        "corpus/silesia/sao",
+        "https://sun.aei.polsl.pl/~sdeor/corpus/sao.bz2",
+    ),
+    (
+        "corpus/silesia/webster",
+        "https://sun.aei.polsl.pl/~sdeor/corpus/webster.bz2",
+    ),
+    (
+        "corpus/silesia/x-ray",
+        "https://sun.aei.polsl.pl/~sdeor/corpus/x-ray.bz2",
+    ),
+    (
+        "corpus/silesia/xml",
+        "https://sun.aei.polsl.pl/~sdeor/corpus/xml.bz2",
+    ),
+];
+
+fn ensure_corpus() {
+    for &(path, url) in SILESIA_DOWNLOADS {
+        if std::fs::metadata(path).is_ok() {
+            continue;
+        }
+        eprintln!("downloading {url} ...");
+        let dir = PathBuf::from(path).parent().unwrap().to_owned();
+        std::fs::create_dir_all(&dir).ok();
+        let status = Command::new("sh")
+            .arg("-c")
+            .arg(format!("curl -fSL '{url}' | bzip2 -d > '{path}'"))
+            .status();
+        match status {
+            Ok(s) if s.success() => {
+                let size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+                eprintln!("  saved {path} ({size} bytes)");
+            }
+            _ => {
+                eprintln!("  failed to download {path}, skipping");
+                std::fs::remove_file(path).ok();
+            }
+        }
+    }
+}
+
+const ALL_FILES: &[&str] = &[
+    "corpus/silesia/dickens",
+    "corpus/silesia/mozilla",
+    "corpus/silesia/mr",
+    "corpus/silesia/nci",
+    "corpus/silesia/ooffice",
+    "corpus/silesia/osdb",
+    "corpus/silesia/reymont",
+    "corpus/silesia/samba",
+    "corpus/silesia/sao",
+    "corpus/silesia/webster",
+    "corpus/silesia/x-ray",
+    "corpus/silesia/xml",
+];
+
+const CODECS: &[&str] = &[
+    "C++ misa77 -0",
+    "C++ misa77 -1",
+    "m77rip compress -0",
+    "m77rip compress -1",
+    "m77rip (from -0)",
+    "m77rip (from -1)",
+];
+
+fn main() {
+    ensure_corpus();
+
+    let args: Vec<String> = std::env::args().collect();
+    let mut only: Vec<String> = Vec::new();
+    let mut file_filter: Vec<String> = Vec::new();
+    let mut i = 1;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--impl" => {
+                i += 1;
+                if i < args.len() {
+                    only.push(args[i].clone());
+                }
+            }
+            "--files" => {
+                i += 1;
+                if i < args.len() {
+                    file_filter.extend(args[i].split(',').map(|s| s.to_string()));
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+
+    let target_ns = 20_000_000u64;
+    let cached = load_cache(CODECS);
+    let mut results: Vec<BenchResult> = Vec::new();
+
+    for path in ALL_FILES {
+        let name = path.rsplit('/').next().unwrap();
+        if !file_filter.is_empty() && !file_filter.iter().any(|f| f == name) {
+            continue;
+        }
+
+        let data = match std::fs::read(path) {
+            Ok(d) => d,
+            Err(_) => {
+                eprintln!("skipping {path}: not found");
+                continue;
+            }
+        };
+
+        for &codec in CODECS {
+            let should_run = only.is_empty() || only.iter().any(|o| codec.contains(o.as_str()));
+
+            if !should_run
+                && let Some(c) = cached
+                    .iter()
+                    .find(|c| c.codec == codec && c.input_name == name)
+            {
+                eprintln!("  {codec} x {name}: cached");
+                results.push(c.clone());
+                continue;
+            }
+
+            eprintln!("  {codec} x {name}: benchmarking...");
+            let r = match codec {
+                "C++ misa77 -0" => bench_c_misa77(&data, name, target_ns, 0),
+                "C++ misa77 -1" => bench_c_misa77(&data, name, target_ns, 1),
+                "m77rip compress -0" => bench_m77rip_compress(&data, name, target_ns, 0),
+                "m77rip compress -1" => bench_m77rip_compress(&data, name, target_ns, 1),
+                "m77rip (from -0)" => bench_m77rip(&data, name, target_ns, 0),
+                "m77rip (from -1)" => bench_m77rip(&data, name, target_ns, 1),
+                _ => unreachable!(),
+            };
+            results.push(r);
+        }
+    }
+
+    save_cache(&results, CODECS);
+
+    // Print decompress summary table
+    println!();
+    println!("=== Decompression ===");
+    println!(
+        "{:<12} {:>10} {:>10} {:>8} {:>10} {:>10} {:>8}",
+        "input", "C++ -0", "m77rip -0", "ratio", "C++ -1", "m77rip -1", "ratio"
+    );
+    println!("{}", "-".repeat(78));
+
+    let fmt_mbps_decomp = |r: Option<&BenchResult>| -> String {
+        match r {
+            Some(r) if r.decompress_ns > 0.0 => {
+                let mbps = r.input_size as f64 / r.decompress_ns * 1000.0;
+                format!("{mbps:.0} MB/s")
+            }
+            _ => "-".to_string(),
+        }
+    };
+
+    let fmt_mbps_comp = |r: Option<&BenchResult>| -> String {
+        match r {
+            Some(r) if r.compress_ns > 0.0 => {
+                let mbps = r.input_size as f64 / r.compress_ns * 1000.0;
+                format!("{mbps:.0} MB/s")
+            }
+            _ => "-".to_string(),
+        }
+    };
+
+    let fmt_ratio_decomp = |cpp: Option<&BenchResult>, rust: Option<&BenchResult>| -> String {
+        match (cpp, rust) {
+            (Some(c), Some(r)) if c.decompress_ns > 0.0 && r.decompress_ns > 0.0 => {
+                let ratio = c.decompress_ns / r.decompress_ns;
+                format!("{ratio:.2}x")
+            }
+            _ => "-".to_string(),
+        }
+    };
+
+    let fmt_ratio_comp = |cpp: Option<&BenchResult>, rust: Option<&BenchResult>| -> String {
+        match (cpp, rust) {
+            (Some(c), Some(r)) if c.compress_ns > 0.0 && r.compress_ns > 0.0 => {
+                let ratio = c.compress_ns / r.compress_ns;
+                format!("{ratio:.2}x")
+            }
+            _ => "-".to_string(),
+        }
+    };
+
+    for path in ALL_FILES {
+        let name = path.rsplit('/').next().unwrap();
+        if !file_filter.is_empty() && !file_filter.iter().any(|f| f == name) {
+            continue;
+        }
+
+        let find = |codec: &str| -> Option<&BenchResult> {
+            results
+                .iter()
+                .find(|r| r.codec == codec && r.input_name == name)
+        };
+
+        println!(
+            "{:<12} {:>10} {:>10} {:>8} {:>10} {:>10} {:>8}",
+            name,
+            fmt_mbps_decomp(find("C++ misa77 -0")),
+            fmt_mbps_decomp(find("m77rip (from -0)")),
+            fmt_ratio_decomp(find("C++ misa77 -0"), find("m77rip (from -0)")),
+            fmt_mbps_decomp(find("C++ misa77 -1")),
+            fmt_mbps_decomp(find("m77rip (from -1)")),
+            fmt_ratio_decomp(find("C++ misa77 -1"), find("m77rip (from -1)")),
+        );
+    }
+
+    // Print compress summary table
+    println!();
+    println!("=== Compression ===");
+    println!(
+        "{:<12} {:>10} {:>10} {:>8} {:>10} {:>10} {:>8}",
+        "input", "C++ -0", "m77rip -0", "ratio", "C++ -1", "m77rip -1", "ratio"
+    );
+    println!("{}", "-".repeat(78));
+
+    for path in ALL_FILES {
+        let name = path.rsplit('/').next().unwrap();
+        if !file_filter.is_empty() && !file_filter.iter().any(|f| f == name) {
+            continue;
+        }
+
+        let find = |codec: &str| -> Option<&BenchResult> {
+            results
+                .iter()
+                .find(|r| r.codec == codec && r.input_name == name)
+        };
+
+        println!(
+            "{:<12} {:>10} {:>10} {:>8} {:>10} {:>10} {:>8}",
+            name,
+            fmt_mbps_comp(find("C++ misa77 -0")),
+            fmt_mbps_comp(find("m77rip compress -0")),
+            fmt_ratio_comp(find("C++ misa77 -0"), find("m77rip compress -0")),
+            fmt_mbps_comp(find("C++ misa77 -1")),
+            fmt_mbps_comp(find("m77rip compress -1")),
+            fmt_ratio_comp(find("C++ misa77 -1"), find("m77rip compress -1")),
+        );
+    }
+}
