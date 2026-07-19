@@ -43,14 +43,14 @@ assert_eq!(written, size);
 
 ## Performance
 
-### Decompression charts
+### Pipeline charts
 
 ![Summary](https://raw.githubusercontent.com/paddor/m77rip/main/doc/charts/x86_64/summary.svg)
 ![Per-file pipeline](https://raw.githubusercontent.com/paddor/m77rip/main/doc/charts/x86_64/pipeline.svg)
 
-Throughput relative to the C++ reference implementation (misa77 v0.3.0),
-Silesia corpus, single-threaded on x86_64 (AVX2). Best of 10 rounds at
-20 ms each.
+Stacked bars show level 0 encode + transfer at 1 GB/s + decode. Lower is
+better. Benchmarks use misa77 v0.3.0, Silesia corpus, single-threaded on
+x86_64 (AVX2). Best of 10 rounds at 20 ms each.
 
 ### Default build
 

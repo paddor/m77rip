@@ -401,18 +401,32 @@ const ALL_FILES: &[&str] = &[
     "corpus/silesia/xml",
 ];
 
+#[cfg(not(feature = "paranoid"))]
+const M77RIP_COMPRESS_0: &str = "m77rip compress -0";
+#[cfg(not(feature = "paranoid"))]
+const M77RIP_COMPRESS_1: &str = "m77rip compress -1";
+#[cfg(not(feature = "paranoid"))]
+const M77RIP_DECODE_0: &str = "m77rip (from -0)";
+#[cfg(not(feature = "paranoid"))]
+const M77RIP_DECODE_1: &str = "m77rip (from -1)";
+
+#[cfg(feature = "paranoid")]
+const M77RIP_COMPRESS_0: &str = "m77rip paranoid compress -0";
+#[cfg(feature = "paranoid")]
+const M77RIP_COMPRESS_1: &str = "m77rip paranoid compress -1";
+#[cfg(feature = "paranoid")]
+const M77RIP_DECODE_0: &str = "m77rip paranoid (from -0)";
+#[cfg(feature = "paranoid")]
+const M77RIP_DECODE_1: &str = "m77rip paranoid (from -1)";
+
 const CODECS: &[&str] = &[
     "C++ misa77 -0",
     "C++ misa77 -1",
     "C++ misa77 safe -0",
-    "m77rip compress -0",
-    "m77rip compress -1",
-    "m77rip (from -0)",
-    "m77rip (from -1)",
-    #[cfg(feature = "paranoid")]
-    "m77rip paranoid (from -0)",
-    #[cfg(feature = "paranoid")]
-    "m77rip paranoid (from -1)",
+    M77RIP_COMPRESS_0,
+    M77RIP_COMPRESS_1,
+    M77RIP_DECODE_0,
+    M77RIP_DECODE_1,
 ];
 
 fn main() {
@@ -477,20 +491,24 @@ fn main() {
                 "C++ misa77 -0" => bench_c_misa77(&data, name, target_ns, 0),
                 "C++ misa77 -1" => bench_c_misa77(&data, name, target_ns, 1),
                 "C++ misa77 safe -0" => bench_c_misa77_safe(&data, name, target_ns, 0),
-                "m77rip compress -0" => bench_m77rip_compress(&data, name, target_ns, 0),
-                "m77rip compress -1" => bench_m77rip_compress(&data, name, target_ns, 1),
-                "m77rip (from -0)" => bench_m77rip(&data, name, target_ns, 0),
-                "m77rip (from -1)" => bench_m77rip(&data, name, target_ns, 1),
-                #[cfg(feature = "paranoid")]
-                "m77rip paranoid (from -0)" => {
-                    let mut r = bench_m77rip(&data, name, target_ns, 0);
-                    r.codec = "m77rip paranoid (from -0)".to_string();
+                M77RIP_COMPRESS_0 => {
+                    let mut r = bench_m77rip_compress(&data, name, target_ns, 0);
+                    r.codec = M77RIP_COMPRESS_0.to_string();
                     r
                 }
-                #[cfg(feature = "paranoid")]
-                "m77rip paranoid (from -1)" => {
+                M77RIP_COMPRESS_1 => {
+                    let mut r = bench_m77rip_compress(&data, name, target_ns, 1);
+                    r.codec = M77RIP_COMPRESS_1.to_string();
+                    r
+                }
+                M77RIP_DECODE_0 => {
+                    let mut r = bench_m77rip(&data, name, target_ns, 0);
+                    r.codec = M77RIP_DECODE_0.to_string();
+                    r
+                }
+                M77RIP_DECODE_1 => {
                     let mut r = bench_m77rip(&data, name, target_ns, 1);
-                    r.codec = "m77rip paranoid (from -1)".to_string();
+                    r.codec = M77RIP_DECODE_1.to_string();
                     r
                 }
                 _ => unreachable!(),
@@ -566,11 +584,11 @@ fn main() {
             "{:<12} {:>10} {:>10} {:>8} {:>10} {:>10} {:>8}",
             name,
             fmt_mbps_decomp(find("C++ misa77 -0")),
-            fmt_mbps_decomp(find("m77rip (from -0)")),
-            fmt_ratio_decomp(find("C++ misa77 -0"), find("m77rip (from -0)")),
+            fmt_mbps_decomp(find(M77RIP_DECODE_0)),
+            fmt_ratio_decomp(find("C++ misa77 -0"), find(M77RIP_DECODE_0)),
             fmt_mbps_decomp(find("C++ misa77 -1")),
-            fmt_mbps_decomp(find("m77rip (from -1)")),
-            fmt_ratio_decomp(find("C++ misa77 -1"), find("m77rip (from -1)")),
+            fmt_mbps_decomp(find(M77RIP_DECODE_1)),
+            fmt_ratio_decomp(find("C++ misa77 -1"), find(M77RIP_DECODE_1)),
         );
     }
 
@@ -599,11 +617,11 @@ fn main() {
             "{:<12} {:>10} {:>10} {:>8} {:>10} {:>10} {:>8}",
             name,
             fmt_mbps_comp(find("C++ misa77 -0")),
-            fmt_mbps_comp(find("m77rip compress -0")),
-            fmt_ratio_comp(find("C++ misa77 -0"), find("m77rip compress -0")),
+            fmt_mbps_comp(find(M77RIP_COMPRESS_0)),
+            fmt_ratio_comp(find("C++ misa77 -0"), find(M77RIP_COMPRESS_0)),
             fmt_mbps_comp(find("C++ misa77 -1")),
-            fmt_mbps_comp(find("m77rip compress -1")),
-            fmt_ratio_comp(find("C++ misa77 -1"), find("m77rip compress -1")),
+            fmt_mbps_comp(find(M77RIP_COMPRESS_1)),
+            fmt_ratio_comp(find("C++ misa77 -1"), find(M77RIP_COMPRESS_1)),
         );
     }
 }
