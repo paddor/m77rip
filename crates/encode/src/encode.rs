@@ -2,7 +2,9 @@ use m77rip_core::Error;
 use m77rip_core::format::*;
 
 #[cfg(not(feature = "paranoid"))]
-use fearless_simd::{Simd, prelude::*};
+use core::ptr;
+#[cfg(not(feature = "paranoid"))]
+use fearless_simd::{Simd, prelude::*, u8x32};
 
 const HASH_SIZE: usize = 1 << 16;
 const HASH_MUL: u32 = 2654435761;
@@ -18,6 +20,7 @@ fn hash4(val: u32) -> usize {
     (val.wrapping_mul(HASH_MUL) >> 16) as usize
 }
 
+#[cfg(feature = "paranoid")]
 #[inline(always)]
 fn read_u32_le(src: &[u8], pos: usize) -> u32 {
     u32::from_le_bytes(src[pos..pos + 4].try_into().unwrap())
@@ -25,19 +28,33 @@ fn read_u32_le(src: &[u8], pos: usize) -> u32 {
 
 #[cfg(not(feature = "paranoid"))]
 #[inline(always)]
-fn lcp<S: Simd>(simd: S, src: &[u8], a: usize, b: usize) -> usize {
-    let limit = MAX_MATCH_LEN.min(src.len().saturating_sub(a.max(b)));
-    if limit >= 32 {
-        let va = fearless_simd::u8x32::from_slice(simd, &src[a..a + 32]);
-        let vb = fearless_simd::u8x32::from_slice(simd, &src[b..b + 32]);
-        let eq = va.simd_eq(vb).to_bitmask() as u32;
-        let diff = !eq;
-        if diff != 0 {
-            return (diff.trailing_zeros() as usize).min(limit);
-        }
-        return limit;
+unsafe fn read_u32_le_unchecked(src: &[u8], pos: usize) -> u32 {
+    debug_assert!(pos + 4 <= src.len());
+    // SAFETY: caller guarantees `pos..pos + 4` is inside `src`; unaligned
+    // reads are allowed.
+    unsafe { ptr::read_unaligned(src.as_ptr().add(pos).cast::<u32>()).to_le() }
+}
+
+#[cfg(not(feature = "paranoid"))]
+#[inline(always)]
+unsafe fn load_u8x32_unchecked<S: Simd>(simd: S, src: &[u8], pos: usize) -> u8x32<S> {
+    debug_assert!(pos + MAX_MATCH_LEN <= src.len());
+    // SAFETY: caller guarantees `pos..pos + 32` is inside `src`. `[u8; 32]`
+    // has alignment 1, so this reference is valid at any byte address.
+    let lanes = unsafe { &*src.as_ptr().add(pos).cast::<[u8; MAX_MATCH_LEN]>() };
+    simd.load_array_ref_u8x32(lanes)
+}
+
+#[cfg(not(feature = "paranoid"))]
+#[inline(always)]
+fn lcp_loaded<S: Simd>(a: u8x32<S>, b: u8x32<S>) -> usize {
+    let eq = a.simd_eq(b).to_bitmask() as u32;
+    let diff = !eq;
+    if diff != 0 {
+        diff.trailing_zeros() as usize
+    } else {
+        MAX_MATCH_LEN
     }
-    lcp_portable(src, a, b, limit)
 }
 
 #[cfg(feature = "paranoid")]
@@ -47,6 +64,7 @@ fn lcp(src: &[u8], a: usize, b: usize) -> usize {
     lcp_portable(src, a, b, limit)
 }
 
+#[cfg(feature = "paranoid")]
 #[inline(always)]
 fn lcp_portable(src: &[u8], a: usize, b: usize, limit: usize) -> usize {
     let mut off = 0;
@@ -176,6 +194,7 @@ impl HashTable {
         }
     }
 
+    #[cfg(feature = "paranoid")]
     #[inline(always)]
     fn insert(&mut self, hsh: usize, pos: usize) {
         let idx = self.indices[hsh] as usize;
@@ -187,10 +206,39 @@ impl HashTable {
         };
     }
 
+    #[cfg(feature = "paranoid")]
     #[inline(always)]
     fn recover_pos(&self, hsh: usize, entry_idx: usize, pos: usize) -> usize {
         let d = (pos as u16)
             .wrapping_sub(self.entries[hsh][entry_idx])
+            .wrapping_sub((HASHTAB_LAG + 1) as u16);
+        pos.wrapping_sub(MAX_MATCH_LEN + 1).wrapping_sub(d as usize)
+    }
+
+    #[cfg(not(feature = "paranoid"))]
+    #[inline(always)]
+    unsafe fn insert_unchecked(&mut self, hsh: usize, pos: usize) {
+        debug_assert!(hsh < HASH_SIZE);
+        let idx = unsafe { *self.indices.get_unchecked(hsh) } as usize;
+        debug_assert!(idx < HASHTAB_WID);
+        unsafe {
+            *self.entries.get_unchecked_mut(hsh).get_unchecked_mut(idx) = pos as u16;
+            *self.indices.get_unchecked_mut(hsh) = if idx == HASHTAB_WID - 1 {
+                0
+            } else {
+                (idx + 1) as u8
+            };
+        }
+    }
+
+    #[cfg(not(feature = "paranoid"))]
+    #[inline(always)]
+    unsafe fn recover_pos_unchecked(&self, hsh: usize, entry_idx: usize, pos: usize) -> usize {
+        debug_assert!(hsh < HASH_SIZE);
+        debug_assert!(entry_idx < HASHTAB_WID);
+        let entry = unsafe { *self.entries.get_unchecked(hsh).get_unchecked(entry_idx) };
+        let d = (pos as u16)
+            .wrapping_sub(entry)
             .wrapping_sub((HASHTAB_LAG + 1) as u16);
         pos.wrapping_sub(MAX_MATCH_LEN + 1).wrapping_sub(d as usize)
     }
@@ -199,18 +247,43 @@ impl HashTable {
 #[cfg(not(feature = "paranoid"))]
 #[inline(always)]
 fn find_best_match<S: Simd>(simd: S, src: &[u8], ht: &HashTable, pos: usize) -> (usize, usize) {
-    let hsh = hash4(read_u32_le(src, pos));
+    debug_assert!(pos > HASHTAB_LAG);
+    debug_assert!(pos + MAX_MATCH_LEN <= src.len());
+    let hsh = hash4(paranoid_unsafe_call!(read_u32_le_unchecked(src, pos)));
+    let reg = paranoid_unsafe_call!(load_u8x32_unchecked(simd, src, pos));
     let mut best_len: usize = 0;
     let mut best_src: usize = 0;
 
-    for i in 0..HASHTAB_WID {
-        let ilst = ht.recover_pos(hsh, i, pos);
-        let m = lcp(simd, src, pos, ilst);
-        if m > best_len {
-            best_len = m;
-            best_src = ilst;
-        }
+    macro_rules! probe {
+        ($i:literal) => {{
+            let ilst = paranoid_unsafe_call!(ht.recover_pos_unchecked(hsh, $i, pos));
+            debug_assert!(ilst + MAX_MATCH_LEN <= src.len());
+            let ireg = paranoid_unsafe_call!(load_u8x32_unchecked(simd, src, ilst));
+            let m = lcp_loaded(reg, ireg);
+            if m > best_len {
+                best_len = m;
+                best_src = ilst;
+            }
+        }};
     }
+
+    probe!(0);
+    probe!(1);
+    probe!(2);
+    probe!(3);
+    probe!(4);
+    probe!(5);
+    probe!(6);
+    probe!(7);
+    probe!(8);
+    probe!(9);
+    probe!(10);
+    probe!(11);
+    probe!(12);
+    probe!(13);
+    probe!(14);
+    probe!(15);
+
     (best_len, best_src)
 }
 
@@ -231,6 +304,22 @@ fn find_best_match(src: &[u8], ht: &HashTable, pos: usize) -> (usize, usize) {
     (best_len, best_src)
 }
 
+#[cfg(not(feature = "paranoid"))]
+#[inline(always)]
+fn batch_insert(src: &[u8], ht: &mut HashTable, hpos: &mut usize, pos: usize) {
+    while pos >= *hpos + HASHTAB_LAG + BATCH {
+        for i in 0..BATCH {
+            let insert_pos = *hpos + i;
+            let hsh = hash4(paranoid_unsafe_call!(read_u32_le_unchecked(
+                src, insert_pos
+            )));
+            paranoid_unsafe_call!(ht.insert_unchecked(hsh, insert_pos));
+        }
+        *hpos += BATCH;
+    }
+}
+
+#[cfg(feature = "paranoid")]
 #[inline(always)]
 fn batch_insert(src: &[u8], ht: &mut HashTable, hpos: &mut usize, pos: usize) {
     while pos >= *hpos + HASHTAB_LAG + BATCH {
@@ -773,5 +862,93 @@ mod tests {
             compress_into_level(b"input", &mut [0; 64], 2),
             Err(Error::InvalidLevel { level: 2 })
         );
+    }
+}
+
+#[cfg(kani)]
+mod kani_proofs {
+    use super::*;
+
+    #[kani::proof]
+    #[cfg(not(feature = "paranoid"))]
+    fn hash4_stays_inside_hash_table() {
+        let val: u32 = kani::any();
+        let hsh = hash4(val);
+        assert!(hsh < HASH_SIZE);
+    }
+
+    #[kani::proof]
+    #[cfg(not(feature = "paranoid"))]
+    fn recovered_match_position_keeps_vector_loads_in_bounds() {
+        let src_len: usize = kani::any();
+        let pos: usize = kani::any();
+        let match_pos: usize = kani::any();
+
+        kani::assume(src_len >= LITERAL_SUFFIX);
+        let pos_after_match = pos.checked_add(MAX_MATCH_LEN);
+        kani::assume(pos_after_match.is_some());
+        kani::assume(pos_after_match.unwrap() <= src_len - LITERAL_SUFFIX);
+        let match_after_distance = match_pos.checked_add(MIN_DISTANCE);
+        kani::assume(match_after_distance.is_some());
+        kani::assume(match_after_distance.unwrap() <= pos);
+        kani::assume(pos - match_pos <= MAX_DISTANCE);
+
+        let entry = match_pos as u16;
+        let d = (pos as u16)
+            .wrapping_sub(entry)
+            .wrapping_sub((HASHTAB_LAG + 1) as u16);
+        let recovered = pos.wrapping_sub(MAX_MATCH_LEN + 1).wrapping_sub(d as usize);
+
+        assert!(recovered == match_pos);
+        assert!(pos_after_match.unwrap() <= src_len);
+        assert!(recovered.checked_add(MAX_MATCH_LEN).unwrap() <= src_len);
+    }
+
+    #[kani::proof]
+    #[cfg(not(feature = "paranoid"))]
+    fn recovered_table_entry_is_always_safe_to_probe() {
+        let src_len: usize = kani::any();
+        let pos: usize = kani::any();
+        let entry: u16 = kani::any();
+
+        kani::assume(src_len >= LITERAL_SUFFIX);
+        let pos_after_match = pos.checked_add(MAX_MATCH_LEN);
+        kani::assume(pos_after_match.is_some());
+        kani::assume(pos_after_match.unwrap() <= src_len - LITERAL_SUFFIX);
+        kani::assume(pos >= MIN_DISTANCE);
+
+        if pos < MAX_DISTANCE {
+            kani::assume((entry as usize) <= pos - MIN_DISTANCE);
+        }
+
+        let d = (pos as u16)
+            .wrapping_sub(entry)
+            .wrapping_sub((HASHTAB_LAG + 1) as u16);
+        let recovered = pos.wrapping_sub(MAX_MATCH_LEN + 1).wrapping_sub(d as usize);
+
+        assert!(recovered + MIN_DISTANCE <= pos);
+        assert!(pos - recovered <= MAX_DISTANCE);
+        assert!(recovered.checked_add(MAX_MATCH_LEN).unwrap() <= src_len);
+    }
+
+    #[kani::proof]
+    #[cfg(not(feature = "paranoid"))]
+    fn batch_insert_reads_are_in_bounds() {
+        let src_len: usize = kani::any();
+        let pos: usize = kani::any();
+        let hpos: usize = kani::any();
+        let i: usize = kani::any();
+
+        kani::assume(src_len >= LITERAL_SUFFIX);
+        let pos_after_match = pos.checked_add(MAX_MATCH_LEN);
+        kani::assume(pos_after_match.is_some());
+        kani::assume(pos_after_match.unwrap() <= src_len - LITERAL_SUFFIX);
+        let batch_ready = hpos.checked_add(HASHTAB_LAG + BATCH);
+        kani::assume(batch_ready.is_some());
+        kani::assume(pos >= batch_ready.unwrap());
+        kani::assume(i < BATCH);
+
+        let insert_pos = hpos + i;
+        assert!(insert_pos.checked_add(4).unwrap() <= src_len);
     }
 }

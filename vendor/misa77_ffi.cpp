@@ -31,4 +31,11 @@ uint64_t misa77_decompress(const uint8_t* src,
     return misa77::decompress(src, src_size, dst, dst_cap);
 }
 
+uint64_t misa77_decompress_safe(const uint8_t* src,
+                                uint64_t src_size,
+                                uint8_t* dst,
+                                uint64_t dst_cap) {
+    return misa77::decompress(src, src_size, dst, dst_cap, misa77::dconfig(true));
+}
+
 } // extern "C"

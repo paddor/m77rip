@@ -129,6 +129,12 @@ pub(crate) fn wild_copy_literals_16(
     dst[dst_pos..dst_pos + 16].copy_from_slice(&src[src_pos..src_pos + 16]);
 }
 
+#[cfg(feature = "paranoid")]
+#[inline(always)]
+pub(crate) fn wild_copy_literals_16_slices(src: &[u8], dst: &mut [u8]) {
+    dst[..16].copy_from_slice(&src[..16]);
+}
+
 /// Unconditional 32-byte non-overlapping match copy within `dst`.
 ///
 /// Default build copies exactly 32 bytes (caller guarantees `dis >= 33` and
@@ -157,7 +163,8 @@ pub(crate) unsafe fn wild_copy_match_32(
 }
 
 /// Unconditional 32-byte non-overlapping match copy (paranoid: bounds-checked,
-/// fixed-size).
+/// fixed-size). Uses `split_at_mut` to prove non-overlap to the compiler,
+/// enabling memcpy codegen instead of memmove.
 #[cfg(feature = "paranoid")]
 #[inline(always)]
 pub(crate) fn wild_copy_match_32(
@@ -166,5 +173,12 @@ pub(crate) fn wild_copy_match_32(
     dst_pos: usize,
     _actual_len: usize,
 ) {
-    dst.copy_within(src_pos..src_pos + 32, dst_pos);
+    let (left, right) = dst.split_at_mut(dst_pos);
+    right[..32].copy_from_slice(&left[src_pos..src_pos + 32]);
+}
+
+#[cfg(feature = "paranoid")]
+#[inline(always)]
+pub(crate) fn wild_copy_match_32_slices(src: &[u8], dst: &mut [u8]) {
+    dst[..32].copy_from_slice(&src[..32]);
 }

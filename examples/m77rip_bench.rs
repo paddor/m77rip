@@ -13,6 +13,7 @@ unsafe extern "C" {
     fn misa77_compress(src: *const u8, src_size: u64, dst: *mut u8, dst_cap: u64, level: u8)
     -> u64;
     fn misa77_decompress(src: *const u8, src_size: u64, dst: *mut u8, dst_cap: u64) -> u64;
+    fn misa77_decompress_safe(src: *const u8, src_size: u64, dst: *mut u8, dst_cap: u64) -> u64;
 }
 
 fn cpu_nanos() -> u64 {
@@ -238,6 +239,31 @@ fn bench_m77rip(data: &[u8], name: &str, target_ns: u64, level: u8) -> BenchResu
     }
 }
 
+fn bench_c_misa77_safe(data: &[u8], name: &str, target_ns: u64, level: u8) -> BenchResult {
+    let compressed = c_misa77_compress(data, level);
+    let mut decomp_buf = vec![0u8; data.len()];
+
+    // SAFETY: Pointers reference live benchmark buffers with matching lengths
+    // and capacities.
+    let decompress_ns = bench_loop(3, target_ns, 10, || unsafe {
+        misa77_decompress_safe(
+            compressed.as_ptr(),
+            compressed.len() as u64,
+            decomp_buf.as_mut_ptr(),
+            decomp_buf.len() as u64,
+        );
+    });
+
+    BenchResult {
+        codec: format!("C++ misa77 safe -{level}"),
+        input_name: name.to_string(),
+        input_size: data.len(),
+        compressed_size: compressed.len(),
+        compress_ns: 0.0,
+        decompress_ns,
+    }
+}
+
 fn arch() -> &'static str {
     std::env::consts::ARCH
 }
@@ -378,10 +404,15 @@ const ALL_FILES: &[&str] = &[
 const CODECS: &[&str] = &[
     "C++ misa77 -0",
     "C++ misa77 -1",
+    "C++ misa77 safe -0",
     "m77rip compress -0",
     "m77rip compress -1",
     "m77rip (from -0)",
     "m77rip (from -1)",
+    #[cfg(feature = "paranoid")]
+    "m77rip paranoid (from -0)",
+    #[cfg(feature = "paranoid")]
+    "m77rip paranoid (from -1)",
 ];
 
 fn main() {
@@ -445,10 +476,23 @@ fn main() {
             let r = match codec {
                 "C++ misa77 -0" => bench_c_misa77(&data, name, target_ns, 0),
                 "C++ misa77 -1" => bench_c_misa77(&data, name, target_ns, 1),
+                "C++ misa77 safe -0" => bench_c_misa77_safe(&data, name, target_ns, 0),
                 "m77rip compress -0" => bench_m77rip_compress(&data, name, target_ns, 0),
                 "m77rip compress -1" => bench_m77rip_compress(&data, name, target_ns, 1),
                 "m77rip (from -0)" => bench_m77rip(&data, name, target_ns, 0),
                 "m77rip (from -1)" => bench_m77rip(&data, name, target_ns, 1),
+                #[cfg(feature = "paranoid")]
+                "m77rip paranoid (from -0)" => {
+                    let mut r = bench_m77rip(&data, name, target_ns, 0);
+                    r.codec = "m77rip paranoid (from -0)".to_string();
+                    r
+                }
+                #[cfg(feature = "paranoid")]
+                "m77rip paranoid (from -1)" => {
+                    let mut r = bench_m77rip(&data, name, target_ns, 1);
+                    r.codec = "m77rip paranoid (from -1)".to_string();
+                    r
+                }
                 _ => unreachable!(),
             };
             results.push(r);

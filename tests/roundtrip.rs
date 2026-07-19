@@ -3,6 +3,11 @@ mod common;
 use common::*;
 use std::iter;
 
+#[cfg(feature = "c-reference")]
+unsafe extern "C" {
+    fn misa77_decompress(src: *const u8, src_size: u64, dst: *mut u8, dst_cap: u64) -> u64;
+}
+
 #[test]
 fn test_end_offset() {
     test_roundtrip("AAAAAAAAAAAAAAAAAAAAAAAAaAAAAAAAAAAAAAAAAAAAAAAAA");
@@ -193,6 +198,42 @@ fn level0_500k() {
     let compressed = m77rip::compress_level(&data, 0).unwrap();
     let decompressed = m77rip::decompress(&compressed, data.len()).unwrap();
     assert_eq!(decompressed, data);
+}
+
+#[test]
+#[cfg(feature = "c-reference")]
+fn cpp_decompresses_m77rip_output() {
+    let mut cases: Vec<Vec<u8>> = vec![
+        b"".to_vec(),
+        b"small payload".to_vec(),
+        compression1k().to_vec(),
+        (0..=255).cycle().take(10_000).collect(),
+    ];
+
+    let mut repeated = Vec::new();
+    while repeated.len() < 80_000 {
+        repeated.extend_from_slice(b"the quick brown fox jumps over the lazy dog\n");
+    }
+    cases.push(repeated);
+
+    for data in cases {
+        for level in [0, 1] {
+            let compressed = m77rip::compress_level(&data, level).unwrap();
+            let mut out = vec![0u8; data.len()];
+            // SAFETY: pointers come from live slices. `out` capacity matches
+            // the original input length encoded by `compressed`.
+            let written = unsafe {
+                misa77_decompress(
+                    compressed.as_ptr(),
+                    compressed.len() as u64,
+                    out.as_mut_ptr(),
+                    out.len() as u64,
+                )
+            } as usize;
+            assert_eq!(written, data.len(), "C++ decode size mismatch");
+            assert_eq!(out, data, "C++ decode content mismatch");
+        }
+    }
 }
 
 use proptest::{prelude::*, test_runner::FileFailurePersistence};

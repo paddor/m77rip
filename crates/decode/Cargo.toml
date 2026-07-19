@@ -16,3 +16,6 @@ paranoid = ["m77rip-core/paranoid"]
 [dependencies]
 m77rip-core = { version = "0.1.0", path = "../core", default-features = false }
 fearless_simd = { version = "0.6.0", default-features = false, features = ["libm"] }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }

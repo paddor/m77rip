@@ -5,11 +5,112 @@ use crate::primitives;
 use m77rip_core::Error;
 use m77rip_core::format::*;
 
+#[cold]
+#[inline(never)]
+fn corrupt_input() -> Result<usize, Error> {
+    Err(Error::CorruptInput)
+}
+
+#[cfg(not(feature = "paranoid"))]
+const RED_SLACK: usize = 8;
+#[cfg(not(feature = "paranoid"))]
+const MAX_INLINE_LIT_LEN: usize = TOKEN_LIT_MAX - 1;
+#[cfg(not(feature = "paranoid"))]
+const MAX_TOKEN_MATCH_LEN: usize = (TOKEN_MATCH_MASK as usize) + MIN_MATCH_LEN - 1;
+
+#[cfg(not(feature = "paranoid"))]
+const _: () = assert!(RED_SLACK >= MIN_MATCH_LEN);
+#[cfg(not(feature = "paranoid"))]
+const _: () = assert!(LITERAL_SUFFIX >= VECTOR_WIDTH);
+#[cfg(not(feature = "paranoid"))]
+const _: () = assert!(MAX_INLINE_LIT_LEN + VECTOR_WIDTH - (RED_SLACK + 1) <= LITERAL_SUFFIX);
+#[cfg(not(feature = "paranoid"))]
+const _: () = assert!(MAX_INLINE_LIT_LEN + MAX_TOKEN_MATCH_LEN - (RED_SLACK + 1) <= LITERAL_SUFFIX);
+
 #[cfg(not(feature = "paranoid"))]
 #[allow(unused_imports)]
 use fearless_simd::Level;
 #[cfg(not(feature = "paranoid"))]
 use fearless_simd::Simd;
+
+#[cfg(not(feature = "paranoid"))]
+#[inline(never)]
+fn guarded_step_default(
+    src: &[u8],
+    dst: &mut [u8],
+    control: &mut usize,
+    literals: &mut usize,
+    out: &mut usize,
+    token_output_end: usize,
+) -> Result<(), Error> {
+    debug_assert!(*control < *literals);
+    debug_assert!(*literals + LITERAL_SUFFIX <= src.len());
+
+    let token = paranoid_unsafe_call!(primitives::read_byte(src, *control));
+    let mut lit_len = (token >> TOKEN_MATCH_BITS) as usize;
+    let match_len = (token & TOKEN_MATCH_MASK) as usize + MIN_MATCH_LEN - 1;
+    let dis =
+        paranoid_unsafe_call!(primitives::read_u16_le(src, *control + 1)) as usize + MIN_DISTANCE;
+    *control += 3;
+
+    if lit_len == TOKEN_LIT_MAX {
+        loop {
+            if *control >= *literals {
+                return Err(Error::CorruptInput);
+            }
+            let extra = paranoid_unsafe_call!(primitives::read_byte(src, *control)) as usize;
+            *control += 1;
+            lit_len = lit_len.checked_add(extra).ok_or(Error::CorruptInput)?;
+            if extra < 255 {
+                break;
+            }
+        }
+    }
+
+    if lit_len > *literals {
+        return Err(Error::CorruptInput);
+    }
+    *literals -= lit_len;
+    let after_literals = (*out).checked_add(lit_len).ok_or(Error::CorruptInput)?;
+    if dis > after_literals {
+        return Err(Error::CorruptInput);
+    }
+    let token_end = after_literals
+        .checked_add(match_len)
+        .ok_or(Error::CorruptInput)?;
+    if token_end > token_output_end {
+        return Err(Error::CorruptInput);
+    }
+
+    paranoid_unsafe_call!(primitives::wild_copy_literals_16(
+        src, *literals, dst, *out, lit_len,
+    ));
+    if lit_len > 16 {
+        paranoid_unsafe_call!(primitives::wild_copy_literals_16(
+            src,
+            *literals + 16,
+            dst,
+            *out + 16,
+            lit_len - 16,
+        ));
+        if lit_len > 32 {
+            paranoid_unsafe_call!(primitives::copy_from_src(
+                src,
+                *literals + 32,
+                dst,
+                *out + 32,
+                lit_len - 32,
+            ));
+        }
+    }
+    *out = after_literals;
+    let match_src = *out - dis;
+    paranoid_unsafe_call!(primitives::wild_copy_match_32(
+        dst, match_src, *out, match_len,
+    ));
+    *out = token_end;
+    Ok(())
+}
 
 /// Reads the decompressed size from the first 8 bytes of a compressed stream.
 ///
@@ -109,13 +210,13 @@ pub fn decompress_into(src: &[u8], dst: &mut [u8]) -> Result<usize, Error> {
         let level = fearless_simd::Level::new();
         #[cfg(not(feature = "std"))]
         let level = fearless_simd::Level::baseline();
-        fearless_simd::dispatch!(level, simd => decompress_loop(
+        fearless_simd::dispatch!(level, simd => decompress_loop_fast(
             simd, src, dst, original_size, literal_suffix_cnt,
             suffix_start_in_src, token_output_end,
         ))
     }
     #[cfg(feature = "paranoid")]
-    decompress_loop(
+    decompress_loop_impl(
         src,
         dst,
         original_size,
@@ -127,47 +228,8 @@ pub fn decompress_into(src: &[u8], dst: &mut [u8]) -> Result<usize, Error> {
 
 #[cfg(not(feature = "paranoid"))]
 #[inline(always)]
-fn decompress_loop<S: Simd>(
+fn decompress_loop_fast<S: Simd>(
     _simd: S,
-    src: &[u8],
-    dst: &mut [u8],
-    original_size: usize,
-    literal_suffix_cnt: usize,
-    suffix_start_in_src: usize,
-    token_output_end: usize,
-) -> Result<usize, Error> {
-    decompress_loop_impl(
-        src,
-        dst,
-        original_size,
-        literal_suffix_cnt,
-        suffix_start_in_src,
-        token_output_end,
-    )
-}
-
-#[cfg(feature = "paranoid")]
-#[inline(always)]
-fn decompress_loop(
-    src: &[u8],
-    dst: &mut [u8],
-    original_size: usize,
-    literal_suffix_cnt: usize,
-    suffix_start_in_src: usize,
-    token_output_end: usize,
-) -> Result<usize, Error> {
-    decompress_loop_impl(
-        src,
-        dst,
-        original_size,
-        literal_suffix_cnt,
-        suffix_start_in_src,
-        token_output_end,
-    )
-}
-
-#[inline(always)]
-fn decompress_loop_impl(
     src: &[u8],
     dst: &mut [u8],
     original_size: usize,
@@ -179,46 +241,61 @@ fn decompress_loop_impl(
     let mut literals = suffix_start_in_src;
     let mut out = 0usize;
 
-    while control
-        .checked_add(3)
-        .is_some_and(|control_end| control_end <= literals)
-    {
+    let prefix_end = MAX_DISTANCE.min(token_output_end);
+    let red = token_output_end.saturating_sub(RED_SLACK);
+
+    while control < literals && out < prefix_end {
+        guarded_step_default(
+            src,
+            dst,
+            &mut control,
+            &mut literals,
+            &mut out,
+            token_output_end,
+        )?;
+    }
+
+    while control < literals && out < red {
+        debug_assert!(out >= MAX_DISTANCE);
+        debug_assert!(literals + LITERAL_SUFFIX <= src.len());
+        debug_assert!(out + MAX_INLINE_LIT_LEN + VECTOR_WIDTH <= original_size);
+        debug_assert!(out + MAX_INLINE_LIT_LEN + MAX_TOKEN_MATCH_LEN <= original_size);
+
         let token = paranoid_unsafe_call!(primitives::read_byte(src, control));
         let mut lit_len = (token >> TOKEN_MATCH_BITS) as usize;
         let match_len = (token & TOKEN_MATCH_MASK) as usize + MIN_MATCH_LEN - 1;
-
-        let dis_small = paranoid_unsafe_call!(primitives::read_u16_le(src, control + 1)) as usize;
-        let dis = dis_small + MIN_DISTANCE;
-
+        let dis = paranoid_unsafe_call!(primitives::read_u16_le(src, control + 1)) as usize
+            + MIN_DISTANCE;
         control += 3;
 
         if lit_len == TOKEN_LIT_MAX {
-            loop {
-                if control >= literals {
-                    return Err(Error::CorruptInput);
+            let extra = paranoid_unsafe_call!(primitives::read_byte(src, control)) as usize;
+            control += 1;
+            lit_len = lit_len.checked_add(extra).ok_or(Error::CorruptInput)?;
+
+            if extra == 255 {
+                loop {
+                    if control >= literals {
+                        return corrupt_input();
+                    }
+                    let extra = paranoid_unsafe_call!(primitives::read_byte(src, control)) as usize;
+                    control += 1;
+                    lit_len = lit_len.checked_add(extra).ok_or(Error::CorruptInput)?;
+                    if extra < 255 {
+                        break;
+                    }
                 }
-                let extra = paranoid_unsafe_call!(primitives::read_byte(src, control)) as usize;
-                control += 1;
-                lit_len = lit_len.checked_add(extra).ok_or(Error::CorruptInput)?;
-                if extra < 255 {
-                    break;
-                }
+            }
+
+            if lit_len > literals {
+                return corrupt_input();
+            }
+            if lit_len - (RED_SLACK - MIN_MATCH_LEN) > red - out {
+                return corrupt_input();
             }
         }
 
-        if lit_len > literals {
-            return Err(Error::CorruptInput);
-        }
         literals -= lit_len;
-
-        let token_len = lit_len.checked_add(match_len).ok_or(Error::CorruptInput)?;
-        if out
-            .checked_add(token_len)
-            .is_none_or(|token_end| token_end > token_output_end)
-        {
-            return Err(Error::CorruptInput);
-        }
-
         paranoid_unsafe_call!(primitives::wild_copy_literals_16(
             src, literals, dst, out, lit_len,
         ));
@@ -228,7 +305,7 @@ fn decompress_loop_impl(
                 literals + 16,
                 dst,
                 out + 16,
-                lit_len.saturating_sub(16),
+                lit_len - 16,
             ));
             if lit_len > 32 {
                 paranoid_unsafe_call!(primitives::copy_from_src(
@@ -242,10 +319,6 @@ fn decompress_loop_impl(
         }
         out += lit_len;
 
-        if dis > out {
-            return Err(Error::CorruptInput);
-        }
-
         let match_src = out - dis;
         paranoid_unsafe_call!(primitives::wild_copy_match_32(
             dst, match_src, out, match_len,
@@ -253,9 +326,284 @@ fn decompress_loop_impl(
         out += match_len;
     }
 
+    while control < literals {
+        guarded_step_default(
+            src,
+            dst,
+            &mut control,
+            &mut literals,
+            &mut out,
+            token_output_end,
+        )?;
+    }
+
+    if out != token_output_end {
+        return corrupt_input();
+    }
+    paranoid_unsafe_call!(primitives::copy_from_src(
+        src,
+        suffix_start_in_src,
+        dst,
+        out,
+        literal_suffix_cnt,
+    ));
+    Ok(original_size)
+}
+
+#[cfg(feature = "paranoid")]
+#[inline(always)]
+fn decompress_loop_impl(
+    src: &[u8],
+    dst: &mut [u8],
+    original_size: usize,
+    literal_suffix_cnt: usize,
+    suffix_start_in_src: usize,
+    token_output_end: usize,
+) -> Result<usize, Error> {
+    let mut control = EXT_HEADER_SIZE;
+    let mut literals = suffix_start_in_src;
+    let mut out = 0usize;
+
+    // Maximum representable displacement.
+    const DIS_CEIL: usize = DIS_LIM + MIN_DISTANCE;
+    // Slack before token_output_end where the fast loop must stop. Non-extension
+    // tokens produce at most 6 literals + 34 match bytes = 40. Keep enough room
+    // so that non-extension tokens cannot overrun.
+    const RED_SLACK: usize = 8;
+
+    let prefix_end = DIS_CEIL.min(token_output_end);
+    let red = token_output_end.saturating_sub(RED_SLACK);
+
+    // --- Phase 1: guarded prefix (match distance can underflow dst[0]) ---
+    while control.checked_add(3).is_some_and(|end| end <= literals) && out < prefix_end {
+        let token = paranoid_unsafe_call!(primitives::read_byte(src, control));
+        let mut lit_len = (token >> TOKEN_MATCH_BITS) as usize;
+        let match_len = (token & TOKEN_MATCH_MASK) as usize + MIN_MATCH_LEN - 1;
+        let dis = paranoid_unsafe_call!(primitives::read_u16_le(src, control + 1)) as usize
+            + MIN_DISTANCE;
+        control += 3;
+
+        if lit_len == TOKEN_LIT_MAX {
+            loop {
+                if control >= literals {
+                    return corrupt_input();
+                }
+                let extra = paranoid_unsafe_call!(primitives::read_byte(src, control)) as usize;
+                control = control.checked_add(1).ok_or(Error::CorruptInput)?;
+                lit_len = lit_len.checked_add(extra).ok_or(Error::CorruptInput)?;
+                if extra < 255 {
+                    break;
+                }
+            }
+        }
+
+        if lit_len > literals {
+            return corrupt_input();
+        }
+        literals -= lit_len;
+        let after_literals = out.checked_add(lit_len).ok_or(Error::CorruptInput)?;
+        let token_end = after_literals
+            .checked_add(match_len)
+            .ok_or(Error::CorruptInput)?;
+        if token_end > token_output_end {
+            return corrupt_input();
+        }
+
+        paranoid_unsafe_call!(primitives::wild_copy_literals_16(
+            src, literals, dst, out, lit_len,
+        ));
+        if lit_len > 16 {
+            paranoid_unsafe_call!(primitives::wild_copy_literals_16(
+                src,
+                literals + 16,
+                dst,
+                out + 16,
+                lit_len - 16,
+            ));
+            if lit_len > 32 {
+                paranoid_unsafe_call!(primitives::copy_from_src(
+                    src,
+                    literals + 32,
+                    dst,
+                    out + 32,
+                    lit_len - 32,
+                ));
+            }
+        }
+        out = after_literals;
+
+        if dis > out {
+            return corrupt_input();
+        }
+        let match_src = out - dis;
+        paranoid_unsafe_call!(primitives::wild_copy_match_32(
+            dst, match_src, out, match_len,
+        ));
+        out = token_end;
+    }
+
+    // --- Phase 2: fast main loop (dis can never underflow, non-extension
+    // tokens can never overrun due to slack) ---
+    while control.checked_add(3).is_some_and(|end| end <= literals) && out < red {
+        let token = paranoid_unsafe_call!(primitives::read_byte(src, control));
+        let mut lit_len = (token >> TOKEN_MATCH_BITS) as usize;
+        let match_len = (token & TOKEN_MATCH_MASK) as usize + MIN_MATCH_LEN - 1;
+        let dis = paranoid_unsafe_call!(primitives::read_u16_le(src, control + 1)) as usize
+            + MIN_DISTANCE;
+        control += 3;
+
+        if lit_len == TOKEN_LIT_MAX {
+            loop {
+                if control >= literals {
+                    return corrupt_input();
+                }
+                let extra = paranoid_unsafe_call!(primitives::read_byte(src, control)) as usize;
+                control = control.checked_add(1).ok_or(Error::CorruptInput)?;
+                lit_len = lit_len.checked_add(extra).ok_or(Error::CorruptInput)?;
+                if extra < 255 {
+                    break;
+                }
+            }
+        }
+
+        if lit_len > literals {
+            return corrupt_input();
+        }
+        let after_literals = out.checked_add(lit_len).ok_or(Error::CorruptInput)?;
+        let token_end = after_literals
+            .checked_add(match_len)
+            .ok_or(Error::CorruptInput)?;
+        if token_end > token_output_end {
+            return corrupt_input();
+        }
+
+        literals -= lit_len;
+
+        #[cfg(feature = "paranoid")]
+        {
+            let literal_src = &src[literals..];
+            let output = &mut dst[out..];
+            primitives::wild_copy_literals_16_slices(literal_src, output);
+            if lit_len > 16 {
+                primitives::wild_copy_literals_16_slices(&literal_src[16..], &mut output[16..]);
+                if lit_len > 32 {
+                    output[32..lit_len].copy_from_slice(&literal_src[32..lit_len]);
+                }
+            }
+        }
+        #[cfg(not(feature = "paranoid"))]
+        {
+            paranoid_unsafe_call!(primitives::wild_copy_literals_16(
+                src, literals, dst, out, lit_len,
+            ));
+            if lit_len > 16 {
+                paranoid_unsafe_call!(primitives::wild_copy_literals_16(
+                    src,
+                    literals + 16,
+                    dst,
+                    out + 16,
+                    lit_len - 16,
+                ));
+                if lit_len > 32 {
+                    paranoid_unsafe_call!(primitives::copy_from_src(
+                        src,
+                        literals + 32,
+                        dst,
+                        out + 32,
+                        lit_len - 32,
+                    ));
+                }
+            }
+        }
+        out = after_literals;
+
+        let match_src = out - dis;
+        #[cfg(feature = "paranoid")]
+        {
+            let (prefix, output) = dst.split_at_mut(out);
+            primitives::wild_copy_match_32_slices(&prefix[match_src..], output);
+        }
+        #[cfg(not(feature = "paranoid"))]
+        paranoid_unsafe_call!(primitives::wild_copy_match_32(
+            dst, match_src, out, match_len,
+        ));
+        out = token_end;
+    }
+
+    // --- Phase 3: guarded tail ---
+    while control.checked_add(3).is_some_and(|end| end <= literals) {
+        let token = paranoid_unsafe_call!(primitives::read_byte(src, control));
+        let mut lit_len = (token >> TOKEN_MATCH_BITS) as usize;
+        let match_len = (token & TOKEN_MATCH_MASK) as usize + MIN_MATCH_LEN - 1;
+        let dis = paranoid_unsafe_call!(primitives::read_u16_le(src, control + 1)) as usize
+            + MIN_DISTANCE;
+        control += 3;
+
+        if lit_len == TOKEN_LIT_MAX {
+            loop {
+                if control >= literals {
+                    return corrupt_input();
+                }
+                let extra = paranoid_unsafe_call!(primitives::read_byte(src, control)) as usize;
+                control = control.checked_add(1).ok_or(Error::CorruptInput)?;
+                lit_len = lit_len.checked_add(extra).ok_or(Error::CorruptInput)?;
+                if extra < 255 {
+                    break;
+                }
+            }
+        }
+
+        if lit_len > literals {
+            return corrupt_input();
+        }
+        literals -= lit_len;
+        let after_literals = out.checked_add(lit_len).ok_or(Error::CorruptInput)?;
+        let token_end = after_literals
+            .checked_add(match_len)
+            .ok_or(Error::CorruptInput)?;
+        if token_end > token_output_end {
+            return corrupt_input();
+        }
+
+        paranoid_unsafe_call!(primitives::wild_copy_literals_16(
+            src, literals, dst, out, lit_len,
+        ));
+        if lit_len > 16 {
+            paranoid_unsafe_call!(primitives::wild_copy_literals_16(
+                src,
+                literals + 16,
+                dst,
+                out + 16,
+                lit_len - 16,
+            ));
+            if lit_len > 32 {
+                paranoid_unsafe_call!(primitives::copy_from_src(
+                    src,
+                    literals + 32,
+                    dst,
+                    out + 32,
+                    lit_len - 32,
+                ));
+            }
+        }
+        out = after_literals;
+
+        if dis > out {
+            return corrupt_input();
+        }
+        let match_src = out - dis;
+        paranoid_unsafe_call!(primitives::wild_copy_match_32(
+            dst, match_src, out, match_len,
+        ));
+        out = token_end;
+    }
+
     if literal_suffix_cnt > 0 {
-        if out + literal_suffix_cnt != original_size {
-            return Err(Error::CorruptInput);
+        if out
+            .checked_add(literal_suffix_cnt)
+            .is_none_or(|end| end != original_size)
+        {
+            return corrupt_input();
         }
         paranoid_unsafe_call!(primitives::copy_from_src(
             src,
@@ -264,11 +612,11 @@ fn decompress_loop_impl(
             out,
             literal_suffix_cnt,
         ));
-        out += literal_suffix_cnt;
+        out = original_size;
     }
 
     if out != original_size {
-        return Err(Error::CorruptInput);
+        return corrupt_input();
     }
 
     Ok(original_size)
@@ -377,5 +725,134 @@ mod tests {
                 actual: 3,
             })
         );
+    }
+}
+
+#[cfg(kani)]
+mod kani_proofs {
+    use super::*;
+
+    /// Fixed-width primitive preconditions match their documented bounds.
+    #[kani::proof]
+    #[cfg(not(feature = "paranoid"))]
+    fn fixed_width_operations_are_in_bounds() {
+        let src = [0u8; 96];
+        let mut dst = [0u8; 96];
+        let src_pos: usize = kani::any();
+        let dst_pos: usize = kani::any();
+        kani::assume(src_pos <= 80);
+        kani::assume(dst_pos <= 64);
+
+        unsafe {
+            primitives::wild_copy_literals_16(&src, src_pos, &mut dst, dst_pos, 1);
+        }
+
+        let match_src = dst_pos.saturating_sub(33);
+        kani::assume(dst_pos >= 33);
+        unsafe {
+            primitives::wild_copy_match_32(&mut dst, match_src, dst_pos, 1);
+        }
+    }
+
+    /// `control < literals` is enough for fixed-width token reads in the fast
+    /// phase because the format requires a literal suffix that also acts as
+    /// source overread padding.
+    #[kani::proof]
+    #[cfg(not(feature = "paranoid"))]
+    fn fast_phase_header_and_first_extension_reads_are_in_bounds() {
+        let src_len: usize = kani::any();
+        let literals: usize = kani::any();
+        let control: usize = kani::any();
+
+        let suffix_end = literals.checked_add(LITERAL_SUFFIX);
+        kani::assume(suffix_end.is_some());
+        kani::assume(suffix_end.unwrap() <= src_len);
+        kani::assume(control < literals);
+
+        let dis_hi = control.checked_add(2).unwrap();
+        let first_extension = control.checked_add(3).unwrap();
+        assert!(dis_hi < src_len);
+        assert!(first_extension < src_len);
+    }
+
+    /// Fast middle-phase non-extension tokens stay inside the output buffer
+    /// because `red` leaves enough suffix slack for wild copies.
+    #[kani::proof]
+    #[cfg(not(feature = "paranoid"))]
+    fn fast_phase_non_extension_geometry_is_in_bounds() {
+        let token_output_end: usize = kani::any();
+        kani::assume(token_output_end <= usize::MAX - LITERAL_SUFFIX);
+        let original_size = token_output_end + LITERAL_SUFFIX;
+        let red = token_output_end.saturating_sub(RED_SLACK);
+
+        let out: usize = kani::any();
+        let lit_len: usize = kani::any();
+        let match_len: usize = kani::any();
+        let dis: usize = kani::any();
+
+        kani::assume(out >= MAX_DISTANCE);
+        kani::assume(out < red);
+        kani::assume(lit_len <= MAX_INLINE_LIT_LEN);
+        kani::assume(match_len <= MAX_TOKEN_MATCH_LEN);
+        kani::assume(dis >= MIN_DISTANCE);
+        kani::assume(dis <= MAX_DISTANCE);
+
+        let after_literals = out.checked_add(lit_len).unwrap();
+        assert!(after_literals >= dis);
+        assert!(out.checked_add(16).unwrap() <= original_size);
+        assert!(after_literals.checked_add(VECTOR_WIDTH).unwrap() <= original_size);
+
+        let match_src = after_literals - dis;
+        assert!(match_src.checked_add(VECTOR_WIDTH).unwrap() <= after_literals);
+    }
+
+    /// Fast middle-phase extension tokens are guarded before any unchecked
+    /// literal or match copy can run past the destination buffer.
+    #[kani::proof]
+    #[cfg(not(feature = "paranoid"))]
+    fn fast_phase_extension_geometry_is_in_bounds() {
+        let token_output_end: usize = kani::any();
+        kani::assume(token_output_end <= usize::MAX - LITERAL_SUFFIX);
+        let original_size = token_output_end + LITERAL_SUFFIX;
+        let red = token_output_end.saturating_sub(RED_SLACK);
+
+        let out: usize = kani::any();
+        let lit_len: usize = kani::any();
+        let match_len: usize = kani::any();
+        let dis: usize = kani::any();
+
+        kani::assume(out >= MAX_DISTANCE);
+        kani::assume(out < red);
+        kani::assume(lit_len >= TOKEN_LIT_MAX);
+        kani::assume(match_len <= MAX_TOKEN_MATCH_LEN);
+        kani::assume(dis >= MIN_DISTANCE);
+        kani::assume(dis <= MAX_DISTANCE);
+        kani::assume(lit_len - (RED_SLACK - MIN_MATCH_LEN) <= red - out);
+
+        let after_literals = out.checked_add(lit_len).unwrap();
+        assert!(after_literals >= dis);
+        assert!(out.checked_add(16).unwrap() <= original_size);
+        assert!(after_literals.checked_add(VECTOR_WIDTH).unwrap() <= original_size);
+
+        let token_end = after_literals.checked_add(match_len).unwrap();
+        assert!(token_end <= original_size);
+
+        let match_src = after_literals - dis;
+        assert!(match_src.checked_add(VECTOR_WIDTH).unwrap() <= after_literals);
+    }
+
+    /// Malformed input must return an error before unchecked copy preconditions
+    /// can be violated.
+    #[kani::proof]
+    #[cfg(not(feature = "paranoid"))]
+    fn malformed_match_is_rejected_before_unsafe_copy() {
+        let src = [0u8; 51];
+        let mut dst = [0u8; 100];
+        let mut control = EXT_HEADER_SIZE;
+        let mut literals = EXT_HEADER_SIZE + 3;
+        let mut out = 0usize;
+        let result =
+            guarded_step_default(&src, &mut dst, &mut control, &mut literals, &mut out, 68);
+        assert!(result.is_err());
     }
 }

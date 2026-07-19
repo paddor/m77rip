@@ -5,8 +5,8 @@
 #[allow(unused_macros)]
 macro_rules! paranoid_unsafe_call {
     ($e:expr) => {
-        // SAFETY: This macro is retained for parity with the decoder. Encoder
-        // code currently has no unsafe call sites.
+        // SAFETY: Default encoder call sites document and enforce each unsafe
+        // primitive contract before invoking this macro.
         unsafe { $e }
     };
 }
