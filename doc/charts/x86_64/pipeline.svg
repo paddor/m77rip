@@ -1,0 +1,94 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 850 700" font-family="system-ui, -apple-system, sans-serif">
+  <rect width="850" height="700" fill="#0d1117"/>
+  <text x="442.5" y="22" text-anchor="middle" fill="#e6edf3" font-size="14" font-weight="700">Decompression: Per-File Throughput (higher is better)</text>
+  <text x="442.5" y="38" text-anchor="middle" fill="#7d8590" font-size="10">Intel Core i7-8700B @ 3.20GHz</text>
+  <line x1="55" y1="197.3" x2="830" y2="197.3" stroke="#21262d" stroke-width="1"/>
+  <text x="47" y="197.3" text-anchor="end" dominant-baseline="middle" fill="#7d8590" font-size="10">5000</text>
+  <line x1="55" y1="104.7" x2="830" y2="104.7" stroke="#21262d" stroke-width="1"/>
+  <text x="47" y="104.7" text-anchor="end" dominant-baseline="middle" fill="#7d8590" font-size="10">10000</text>
+  <line x1="55" y1="290" x2="830" y2="290" stroke="#30363d" stroke-width="1.5"/>
+  <text x="18" y="325.0" text-anchor="middle" fill="#e6edf3" font-size="11" font-weight="600" transform="rotate(-90,18,325.0)">MB/s</text>
+  <rect x="71.1" y="191.5" width="24.2" height="98.5" fill="#60a5fa" rx="1"/>
+  <rect x="95.4" y="197.0" width="24.2" height="93.0" fill="#93c5fd" rx="1"/>
+  <rect x="119.6" y="190.4" width="24.2" height="99.6" fill="#f87171" rx="1"/>
+  <rect x="143.8" y="261.3" width="24.2" height="28.7" fill="#f472b6" rx="1"/>
+  <text x="119.6" y="306" text-anchor="middle" fill="#e6edf3" font-size="10" font-weight="600">dickens</text>
+  <text x="119.6" y="318" text-anchor="middle" fill="#7d8590" font-size="9">10.2 MB</text>
+  <rect x="200.3" y="192.6" width="24.2" height="97.4" fill="#60a5fa" rx="1"/>
+  <rect x="224.5" y="197.1" width="24.2" height="92.9" fill="#93c5fd" rx="1"/>
+  <rect x="248.8" y="191.4" width="24.2" height="98.6" fill="#f87171" rx="1"/>
+  <rect x="273.0" y="253.3" width="24.2" height="36.7" fill="#f472b6" rx="1"/>
+  <text x="248.8" y="306" text-anchor="middle" fill="#e6edf3" font-size="10" font-weight="600">mozilla</text>
+  <text x="248.8" y="318" text-anchor="middle" fill="#7d8590" font-size="9">51.2 MB</text>
+  <rect x="329.5" y="193.1" width="24.2" height="96.9" fill="#60a5fa" rx="1"/>
+  <rect x="353.7" y="197.1" width="24.2" height="92.9" fill="#93c5fd" rx="1"/>
+  <rect x="377.9" y="189.4" width="24.2" height="100.6" fill="#f87171" rx="1"/>
+  <rect x="402.1" y="251.5" width="24.2" height="38.5" fill="#f472b6" rx="1"/>
+  <text x="377.9" y="306" text-anchor="middle" fill="#e6edf3" font-size="10" font-weight="600">mr</text>
+  <text x="377.9" y="318" text-anchor="middle" fill="#7d8590" font-size="9">10.0 MB</text>
+  <rect x="458.6" y="132.3" width="24.2" height="157.7" fill="#60a5fa" rx="1"/>
+  <rect x="482.9" y="134.6" width="24.2" height="155.4" fill="#93c5fd" rx="1"/>
+  <rect x="507.1" y="125.4" width="24.2" height="164.6" fill="#f87171" rx="1"/>
+  <rect x="531.3" y="228.8" width="24.2" height="61.2" fill="#f472b6" rx="1"/>
+  <text x="507.1" y="306" text-anchor="middle" fill="#e6edf3" font-size="10" font-weight="600">nci</text>
+  <text x="507.1" y="318" text-anchor="middle" fill="#7d8590" font-size="9">33.6 MB</text>
+  <rect x="587.8" y="209.9" width="24.2" height="80.1" fill="#60a5fa" rx="1"/>
+  <rect x="612.0" y="214.6" width="24.2" height="75.4" fill="#93c5fd" rx="1"/>
+  <rect x="636.2" y="210.3" width="24.2" height="79.7" fill="#f87171" rx="1"/>
+  <rect x="660.5" y="257.5" width="24.2" height="32.5" fill="#f472b6" rx="1"/>
+  <text x="636.2" y="306" text-anchor="middle" fill="#e6edf3" font-size="10" font-weight="600">ooffice</text>
+  <text x="636.2" y="318" text-anchor="middle" fill="#7d8590" font-size="9">6.2 MB</text>
+  <rect x="717.0" y="179.1" width="24.2" height="110.9" fill="#60a5fa" rx="1"/>
+  <rect x="741.2" y="189.5" width="24.2" height="100.5" fill="#93c5fd" rx="1"/>
+  <rect x="765.4" y="186.6" width="24.2" height="103.4" fill="#f87171" rx="1"/>
+  <rect x="789.6" y="252.5" width="24.2" height="37.5" fill="#f472b6" rx="1"/>
+  <text x="765.4" y="306" text-anchor="middle" fill="#e6edf3" font-size="10" font-weight="600">osdb</text>
+  <text x="765.4" y="318" text-anchor="middle" fill="#7d8590" font-size="9">10.1 MB</text>
+  <line x1="55" y1="507.3" x2="830" y2="507.3" stroke="#21262d" stroke-width="1"/>
+  <line x1="55" y1="414.7" x2="830" y2="414.7" stroke="#21262d" stroke-width="1"/>
+  <line x1="55" y1="600" x2="830" y2="600" stroke="#30363d" stroke-width="1.5"/>
+  <rect x="71.1" y="487.5" width="24.2" height="112.5" fill="#60a5fa" rx="1"/>
+  <rect x="95.4" y="492.8" width="24.2" height="107.2" fill="#93c5fd" rx="1"/>
+  <rect x="119.6" y="486.4" width="24.2" height="113.6" fill="#f87171" rx="1"/>
+  <rect x="143.8" y="566.7" width="24.2" height="33.3" fill="#f472b6" rx="1"/>
+  <text x="119.6" y="616" text-anchor="middle" fill="#e6edf3" font-size="10" font-weight="600">reymont</text>
+  <text x="119.6" y="628" text-anchor="middle" fill="#7d8590" font-size="9">6.6 MB</text>
+  <rect x="200.3" y="465.1" width="24.2" height="134.9" fill="#60a5fa" rx="1"/>
+  <rect x="224.5" y="470.5" width="24.2" height="129.5" fill="#93c5fd" rx="1"/>
+  <rect x="248.8" y="464.3" width="24.2" height="135.7" fill="#f87171" rx="1"/>
+  <rect x="273.0" y="553.4" width="24.2" height="46.6" fill="#f472b6" rx="1"/>
+  <text x="248.8" y="616" text-anchor="middle" fill="#e6edf3" font-size="10" font-weight="600">samba</text>
+  <text x="248.8" y="628" text-anchor="middle" fill="#7d8590" font-size="9">21.6 MB</text>
+  <rect x="329.5" y="502.8" width="24.2" height="97.2" fill="#60a5fa" rx="1"/>
+  <rect x="353.7" y="514.7" width="24.2" height="85.3" fill="#93c5fd" rx="1"/>
+  <rect x="377.9" y="508.1" width="24.2" height="91.9" fill="#f87171" rx="1"/>
+  <rect x="402.1" y="567.0" width="24.2" height="33.0" fill="#f472b6" rx="1"/>
+  <text x="377.9" y="616" text-anchor="middle" fill="#e6edf3" font-size="10" font-weight="600">sao</text>
+  <text x="377.9" y="628" text-anchor="middle" fill="#7d8590" font-size="9">7.3 MB</text>
+  <rect x="458.6" y="480.1" width="24.2" height="119.9" fill="#60a5fa" rx="1"/>
+  <rect x="482.9" y="484.9" width="24.2" height="115.1" fill="#93c5fd" rx="1"/>
+  <rect x="507.1" y="477.7" width="24.2" height="122.3" fill="#f87171" rx="1"/>
+  <rect x="531.3" y="563.5" width="24.2" height="36.5" fill="#f472b6" rx="1"/>
+  <text x="507.1" y="616" text-anchor="middle" fill="#e6edf3" font-size="10" font-weight="600">webster</text>
+  <text x="507.1" y="628" text-anchor="middle" fill="#7d8590" font-size="9">41.5 MB</text>
+  <rect x="587.8" y="388.0" width="24.2" height="212.0" fill="#60a5fa" rx="1"/>
+  <rect x="612.0" y="388.5" width="24.2" height="211.5" fill="#93c5fd" rx="1"/>
+  <rect x="636.2" y="385.7" width="24.2" height="214.3" fill="#f87171" rx="1"/>
+  <rect x="660.5" y="444.3" width="24.2" height="155.7" fill="#f472b6" rx="1"/>
+  <text x="636.2" y="616" text-anchor="middle" fill="#e6edf3" font-size="10" font-weight="600">x-ray</text>
+  <text x="636.2" y="628" text-anchor="middle" fill="#7d8590" font-size="9">8.5 MB</text>
+  <rect x="717.0" y="404.1" width="24.2" height="195.9" fill="#60a5fa" rx="1"/>
+  <rect x="741.2" y="413.2" width="24.2" height="186.8" fill="#93c5fd" rx="1"/>
+  <rect x="765.4" y="404.2" width="24.2" height="195.8" fill="#f87171" rx="1"/>
+  <rect x="789.6" y="542.7" width="24.2" height="57.3" fill="#f472b6" rx="1"/>
+  <text x="765.4" y="616" text-anchor="middle" fill="#e6edf3" font-size="10" font-weight="600">xml</text>
+  <text x="765.4" y="628" text-anchor="middle" fill="#7d8590" font-size="9">5.3 MB</text>
+  <rect x="42" y="641" width="12" height="12" fill="#60a5fa" rx="2"/>
+  <text x="60" y="650" fill="#e6edf3" font-size="10" font-weight="500">C++ misa77 (unsafe)</text>
+  <rect x="242" y="641" width="12" height="12" fill="#93c5fd" rx="2"/>
+  <text x="260" y="650" fill="#e6edf3" font-size="10" font-weight="500">C++ misa77 (safe)</text>
+  <rect x="442" y="641" width="12" height="12" fill="#f87171" rx="2"/>
+  <text x="460" y="650" fill="#e6edf3" font-size="10" font-weight="500">m77rip (encapsulated unsafe)</text>
+  <rect x="642" y="641" width="12" height="12" fill="#f472b6" rx="2"/>
+  <text x="660" y="650" fill="#e6edf3" font-size="10" font-weight="500">m77rip (paranoid)</text>
+</svg>
