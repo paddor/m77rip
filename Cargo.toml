@@ -13,7 +13,19 @@ repository = "https://github.com/paddor/m77rip"
 readme = "README.md"
 keywords = ["compression", "misa77", "compress", "decompress", "decompression"]
 categories = ["compression"]
-exclude = ["vendor/misa77/corpus/**", "vendor/misa77/misc/**"]
+include = [
+    "src/**/*",
+    "build.rs",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md",
+    "DESIGN.md",
+    "SAFETY.md",
+    "vendor/misa77_ffi.cpp",
+    "vendor/misa77/LICENSE",
+    "vendor/misa77/include/**/*",
+    "vendor/misa77/src/**/*",
+]
 
 [features]
 default = ["std"]
