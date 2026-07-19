@@ -155,26 +155,14 @@ fn validate_level(level: u8) -> Result<(), Error> {
 #[cfg(not(feature = "paranoid"))]
 fn compress_dispatch(src: &[u8], dst: &mut [u8], level: u8) -> usize {
     let level_obj = fearless_simd::Level::new();
-    fearless_simd::dispatch!(level_obj, simd => compress_inner(simd, src, dst, level))
-}
-
-#[cfg(feature = "paranoid")]
-fn compress_dispatch(src: &[u8], dst: &mut [u8], level: u8) -> usize {
-    compress_inner(src, dst, level)
-}
-
-#[cfg(not(feature = "paranoid"))]
-#[inline(always)]
-fn compress_inner<S: Simd>(_simd: S, src: &[u8], dst: &mut [u8], level: u8) -> usize {
     match level {
-        0 => loose_compress(_simd, src, dst),
-        _ => default_compress(_simd, src, dst),
+        0 => fearless_simd::dispatch!(level_obj, simd => loose_compress(simd, src, dst)),
+        _ => fearless_simd::dispatch!(level_obj, simd => default_compress(simd, src, dst)),
     }
 }
 
 #[cfg(feature = "paranoid")]
-#[inline(always)]
-fn compress_inner(src: &[u8], dst: &mut [u8], level: u8) -> usize {
+fn compress_dispatch(src: &[u8], dst: &mut [u8], level: u8) -> usize {
     match level {
         0 => loose_compress(src, dst),
         _ => default_compress(src, dst),
@@ -244,9 +232,56 @@ impl HashTable {
     }
 }
 
+struct LatestHashTable {
+    entries: Vec<u16>,
+}
+
+impl LatestHashTable {
+    fn new() -> Self {
+        Self {
+            entries: vec![0u16; HASH_SIZE],
+        }
+    }
+
+    #[cfg(feature = "paranoid")]
+    #[inline(always)]
+    fn insert(&mut self, hsh: usize, pos: usize) {
+        self.entries[hsh] = pos as u16;
+    }
+
+    #[cfg(feature = "paranoid")]
+    #[inline(always)]
+    fn recover_pos(&self, hsh: usize, pos: usize) -> usize {
+        let d = (pos as u16)
+            .wrapping_sub(self.entries[hsh])
+            .wrapping_sub((HASHTAB_LAG + 1) as u16);
+        pos.wrapping_sub(MAX_MATCH_LEN + 1).wrapping_sub(d as usize)
+    }
+
+    #[cfg(not(feature = "paranoid"))]
+    #[inline(always)]
+    unsafe fn insert_unchecked(&mut self, hsh: usize, pos: usize) {
+        debug_assert!(hsh < HASH_SIZE);
+        unsafe {
+            *self.entries.get_unchecked_mut(hsh) = pos as u16;
+        }
+    }
+
+    #[cfg(not(feature = "paranoid"))]
+    #[inline(always)]
+    unsafe fn recover_pos_unchecked(&self, hsh: usize, pos: usize) -> usize {
+        debug_assert!(hsh < HASH_SIZE);
+        let entry = unsafe { *self.entries.get_unchecked(hsh) };
+        let d = (pos as u16)
+            .wrapping_sub(entry)
+            .wrapping_sub((HASHTAB_LAG + 1) as u16);
+        pos.wrapping_sub(MAX_MATCH_LEN + 1).wrapping_sub(d as usize)
+    }
+}
+
 #[cfg(not(feature = "paranoid"))]
 #[inline(always)]
-fn find_best_match<S: Simd>(simd: S, src: &[u8], ht: &HashTable, pos: usize) -> (usize, usize) {
+fn find_best_match16<S: Simd>(simd: S, src: &[u8], ht: &HashTable, pos: usize) -> (usize, usize) {
     debug_assert!(pos > HASHTAB_LAG);
     debug_assert!(pos + MAX_MATCH_LEN <= src.len());
     let hsh = hash4(paranoid_unsafe_call!(read_u32_le_unchecked(src, pos)));
@@ -287,6 +322,24 @@ fn find_best_match<S: Simd>(simd: S, src: &[u8], ht: &HashTable, pos: usize) -> 
     (best_len, best_src)
 }
 
+#[cfg(not(feature = "paranoid"))]
+#[inline(always)]
+fn find_latest_match<S: Simd>(
+    simd: S,
+    src: &[u8],
+    ht: &LatestHashTable,
+    pos: usize,
+) -> (usize, usize) {
+    debug_assert!(pos > HASHTAB_LAG);
+    debug_assert!(pos + MAX_MATCH_LEN <= src.len());
+    let hsh = hash4(paranoid_unsafe_call!(read_u32_le_unchecked(src, pos)));
+    let reg = paranoid_unsafe_call!(load_u8x32_unchecked(simd, src, pos));
+    let lst = paranoid_unsafe_call!(ht.recover_pos_unchecked(hsh, pos));
+    debug_assert!(lst + MAX_MATCH_LEN <= src.len());
+    let ireg = paranoid_unsafe_call!(load_u8x32_unchecked(simd, src, lst));
+    (lcp_loaded(reg, ireg), lst)
+}
+
 #[cfg(feature = "paranoid")]
 fn find_best_match(src: &[u8], ht: &HashTable, pos: usize) -> (usize, usize) {
     let hsh = hash4(read_u32_le(src, pos));
@@ -304,6 +357,13 @@ fn find_best_match(src: &[u8], ht: &HashTable, pos: usize) -> (usize, usize) {
     (best_len, best_src)
 }
 
+#[cfg(feature = "paranoid")]
+fn find_latest_match(src: &[u8], ht: &LatestHashTable, pos: usize) -> (usize, usize) {
+    let hsh = hash4(read_u32_le(src, pos));
+    let lst = ht.recover_pos(hsh, pos);
+    (lcp(src, pos, lst), lst)
+}
+
 #[cfg(not(feature = "paranoid"))]
 #[inline(always)]
 fn batch_insert(src: &[u8], ht: &mut HashTable, hpos: &mut usize, pos: usize) {
@@ -319,9 +379,36 @@ fn batch_insert(src: &[u8], ht: &mut HashTable, hpos: &mut usize, pos: usize) {
     }
 }
 
+#[cfg(not(feature = "paranoid"))]
+#[inline(always)]
+fn batch_insert_latest(src: &[u8], ht: &mut LatestHashTable, hpos: &mut usize, pos: usize) {
+    while pos >= *hpos + HASHTAB_LAG + BATCH {
+        for i in 0..BATCH {
+            let insert_pos = *hpos + i;
+            let hsh = hash4(paranoid_unsafe_call!(read_u32_le_unchecked(
+                src, insert_pos
+            )));
+            paranoid_unsafe_call!(ht.insert_unchecked(hsh, insert_pos));
+        }
+        *hpos += BATCH;
+    }
+}
+
 #[cfg(feature = "paranoid")]
 #[inline(always)]
 fn batch_insert(src: &[u8], ht: &mut HashTable, hpos: &mut usize, pos: usize) {
+    while pos >= *hpos + HASHTAB_LAG + BATCH {
+        for i in 0..BATCH {
+            let hsh = hash4(read_u32_le(src, *hpos + i));
+            ht.insert(hsh, *hpos + i);
+        }
+        *hpos += BATCH;
+    }
+}
+
+#[cfg(feature = "paranoid")]
+#[inline(always)]
+fn batch_insert_latest(src: &[u8], ht: &mut LatestHashTable, hpos: &mut usize, pos: usize) {
     while pos >= *hpos + HASHTAB_LAG + BATCH {
         for i in 0..BATCH {
             let hsh = hash4(read_u32_le(src, *hpos + i));
@@ -409,7 +496,7 @@ fn default_compress_impl<S: Simd>(simd: S, src: &[u8], dst: &mut [u8]) -> usize 
         batch_insert(src, &mut ht, &mut hpos, pos);
 
         let (mut match_len, mut lst) = if pos > HASHTAB_LAG {
-            find_best_match(simd, src, &ht, pos)
+            find_best_match16(simd, src, &ht, pos)
         } else {
             (0, 0)
         };
@@ -420,7 +507,7 @@ fn default_compress_impl<S: Simd>(simd: S, src: &[u8], dst: &mut [u8]) -> usize 
                     break;
                 }
 
-                let (nmatch_len, nlst) = find_best_match(simd, src, &ht, npos);
+                let (nmatch_len, nlst) = find_best_match16(simd, src, &ht, npos);
 
                 if nmatch_len > match_len {
                     pos = npos;
@@ -588,7 +675,7 @@ fn loose_compress_impl<S: Simd>(simd: S, src: &[u8], dst: &mut [u8]) -> usize {
     let mut drpos = dst_cap;
     let match_end_limit = src_size - LITERAL_SUFFIX;
 
-    let mut ht = HashTable::new();
+    let mut ht = LatestHashTable::new();
     let mut pos: usize = 0;
     let mut hpos: usize = 0;
     let mut lit: usize = 0;
@@ -600,10 +687,10 @@ fn loose_compress_impl<S: Simd>(simd: S, src: &[u8], dst: &mut [u8]) -> usize {
     let mut regime: i64 = 0;
 
     while pos + MAX_MATCH_LEN <= match_end_limit {
-        batch_insert(src, &mut ht, &mut hpos, pos);
+        batch_insert_latest(src, &mut ht, &mut hpos, pos);
 
         let (mut match_len, mut lst) = if pos > HASHTAB_LAG {
-            find_best_match(simd, src, &ht, pos)
+            find_latest_match(simd, src, &ht, pos)
         } else {
             (0, 0)
         };
@@ -708,7 +795,7 @@ fn loose_compress_impl(src: &[u8], dst: &mut [u8]) -> usize {
     let mut drpos = dst_cap;
     let match_end_limit = src_size - LITERAL_SUFFIX;
 
-    let mut ht = HashTable::new();
+    let mut ht = LatestHashTable::new();
     let mut pos: usize = 0;
     let mut hpos: usize = 0;
     let mut lit: usize = 0;
@@ -720,10 +807,10 @@ fn loose_compress_impl(src: &[u8], dst: &mut [u8]) -> usize {
     let mut regime: i64 = 0;
 
     while pos + MAX_MATCH_LEN <= match_end_limit {
-        batch_insert(src, &mut ht, &mut hpos, pos);
+        batch_insert_latest(src, &mut ht, &mut hpos, pos);
 
         let (mut match_len, mut lst) = if pos > HASHTAB_LAG {
-            find_best_match(src, &ht, pos)
+            find_latest_match(src, &ht, pos)
         } else {
             (0, 0)
         };
