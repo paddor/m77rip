@@ -5,7 +5,7 @@ resolver = "3"
 [package]
 name = "m77rip"
 description = "Fast, memory-safe Rust encoder and decoder for the misa77 compression format"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2024"
 rust-version = "1.89"
 license = "MIT"
@@ -35,9 +35,9 @@ c-reference = ["dep:cc"]
 paranoid = ["m77rip-core/paranoid", "m77rip-encode/paranoid", "m77rip-decode/paranoid"]
 
 [dependencies]
-m77rip-core = { version = "0.1.1", path = "crates/core", default-features = false }
-m77rip-encode = { version = "0.1.1", path = "crates/encode", default-features = false }
-m77rip-decode = { version = "0.1.1", path = "crates/decode", default-features = false }
+m77rip-core = { version = "0.1.2", path = "crates/core", default-features = false }
+m77rip-encode = { version = "0.1.2", path = "crates/encode", default-features = false }
+m77rip-decode = { version = "0.1.2", path = "crates/decode", default-features = false }
 
 [build-dependencies]
 cc = { version = "1", optional = true }

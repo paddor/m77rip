@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-07-19
+
+- Reduced the published root crate package to runtime/library files and the
+  vendored C++ source required by the optional `c-reference` feature.
+- Fixed README chart image URLs to include the `main` branch segment.
+
 ## [0.1.1] - 2026-07-19
 
 - Optimized default decoder and encoder hot paths to match misa77 v0.3.0
