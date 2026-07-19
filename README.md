@@ -43,7 +43,12 @@ assert_eq!(written, size);
 
 ## Performance
 
-Throughput relative to the C++ reference implementation (misa77 v0.2.0),
+### Decompression charts
+
+![Summary](https://raw.githubusercontent.com/paddor/m77rip/doc/charts/x86_64/summary.svg)
+![Per-file pipeline](https://raw.githubusercontent.com/paddor/m77rip/doc/charts/x86_64/pipeline.svg)
+
+Throughput relative to the C++ reference implementation (misa77 v0.3.0),
 Silesia corpus, single-threaded on x86_64 (AVX2). Best of 10 rounds at
 20 ms each.
 
@@ -51,37 +56,37 @@ Silesia corpus, single-threaded on x86_64 (AVX2). Best of 10 rounds at
 
 | File    | Decode -0 | Decode -1 | Encode -0 | Encode -1 |
 |---------|-----------|-----------|-----------|-----------|
-| dickens |     0.59x |     0.58x |     0.68x |     0.75x |
-| mozilla |     0.73x |     0.70x |     0.63x |     0.64x |
-| mr      |     0.65x |     0.73x |     0.65x |     0.66x |
-| nci     |     0.71x |     0.83x |     0.56x |     0.62x |
-| ooffice |     0.80x |     0.71x |     0.64x |     0.80x |
-| osdb    |     0.64x |     0.71x |     0.65x |     0.65x |
-| reymont |     0.58x |     0.57x |     0.65x |     0.70x |
-| samba   |     0.66x |     0.65x |     0.63x |     0.65x |
-| sao     |     0.62x |     0.70x |     0.63x |     0.64x |
-| webster |     0.65x |     0.63x |     0.65x |     0.70x |
-| x-ray   |     0.93x |     0.78x |     0.65x |     0.63x |
-| xml     |     0.59x |     0.59x |     0.61x |     0.63x |
-| **geomean** | **0.67x** | **0.68x** | **0.64x** | **0.67x** |
+| dickens |     1.01x |     1.02x |     1.03x |     1.05x |
+| mozilla |     1.01x |     1.02x |     1.00x |     0.98x |
+| mr      |     1.04x |     1.02x |     1.04x |     1.09x |
+| nci     |     1.04x |     1.03x |     1.00x |     0.97x |
+| ooffice |     1.00x |     0.99x |     1.00x |     0.97x |
+| osdb    |     0.93x |     0.94x |     1.00x |     0.96x |
+| reymont |     1.01x |     1.01x |     0.99x |     1.03x |
+| samba   |     1.01x |     1.00x |     1.00x |     0.98x |
+| sao     |     0.95x |     0.94x |     1.01x |     0.99x |
+| webster |     1.02x |     1.03x |     1.01x |     0.99x |
+| x-ray   |     1.01x |     0.98x |     0.99x |     0.96x |
+| xml     |     1.00x |     1.00x |     1.02x |     1.01x |
+| **geomean** | **1.00x** | **1.00x** | **1.01x** | **1.00x** |
 
 ### Paranoid build (`--features paranoid`, zero unsafe)
 
 | File    | Decode -0 | Decode -1 | Encode -0 | Encode -1 |
 |---------|-----------|-----------|-----------|-----------|
-| dickens |     0.24x |     0.23x |     0.60x |     0.60x |
-| mozilla |     0.32x |     0.31x |     0.55x |     0.52x |
-| mr      |     0.29x |     0.31x |     0.57x |     0.58x |
-| nci     |     0.31x |     0.35x |     0.42x |     0.43x |
-| ooffice |     0.37x |     0.33x |     0.57x |     0.68x |
-| osdb    |     0.29x |     0.32x |     0.55x |     0.54x |
-| reymont |     0.22x |     0.22x |     0.54x |     0.52x |
-| samba   |     0.28x |     0.26x |     0.52x |     0.50x |
-| sao     |     0.28x |     0.35x |     0.56x |     0.55x |
-| webster |     0.26x |     0.25x |     0.55x |     0.54x |
-| x-ray   |     0.66x |     0.41x |     0.59x |     0.55x |
-| xml     |     0.23x |     0.23x |     0.47x |     0.46x |
-| **geomean** | **0.30x** | **0.29x** | **0.54x** | **0.54x** |
+| dickens |     0.29x |     0.28x |     0.63x |     0.63x |
+| mozilla |     0.38x |     0.38x |     0.56x |     0.53x |
+| mr      |     0.40x |     0.38x |     0.60x |     0.63x |
+| nci     |     0.39x |     0.38x |     0.43x |     0.41x |
+| ooffice |     0.41x |     0.38x |     0.58x |     0.56x |
+| osdb    |     0.34x |     0.34x |     0.58x |     0.56x |
+| reymont |     0.30x |     0.29x |     0.54x |     0.52x |
+| samba   |     0.35x |     0.33x |     0.54x |     0.52x |
+| sao     |     0.34x |     0.41x |     0.59x |     0.58x |
+| webster |     0.30x |     0.30x |     0.58x |     0.57x |
+| x-ray   |     0.73x |     0.47x |     0.67x |     0.63x |
+| xml     |     0.29x |     0.29x |     0.50x |     0.49x |
+| **geomean** | **0.36x** | **0.35x** | **0.56x** | **0.55x** |
 
 ## `no_std` and 32-bit support
 

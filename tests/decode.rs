@@ -1,4 +1,16 @@
 use m77rip::{Error, decompress, decompress_into, decompressed_size};
+use m77rip_core::format::{
+    EXT_HEADER_SIZE, MAX_DISTANCE, MIN_MATCH_LEN, TOKEN_LIT_MAX, TOKEN_MATCH_BITS,
+};
+
+fn push_literal_extension(out: &mut Vec<u8>, literal_len: usize) {
+    let mut remaining = literal_len - TOKEN_LIT_MAX;
+    while remaining >= 255 {
+        out.push(255);
+        remaining -= 255;
+    }
+    out.push(remaining as u8);
+}
 
 #[test]
 fn decompressed_size_valid() {
@@ -76,6 +88,47 @@ fn decompress_corrupt_suffix_cnt_too_large() {
     compressed.extend_from_slice(&(100u64).to_le_bytes());
     compressed.extend_from_slice(&[0u8; 50]);
     let err = decompress(&compressed, 50).unwrap_err();
+    assert_eq!(err, Error::CorruptInput);
+}
+
+#[test]
+fn decompress_rejects_match_before_output() {
+    let mut compressed = Vec::new();
+    compressed.extend_from_slice(&(100u64).to_le_bytes());
+    compressed.extend_from_slice(&(32u64).to_le_bytes());
+    compressed.extend_from_slice(&[7 << 5, 0, 0]);
+    compressed.extend_from_slice(&[0u8; 32]);
+
+    let err = decompress(&compressed, 100).unwrap_err();
+    assert_eq!(err, Error::CorruptInput);
+}
+
+#[test]
+fn decompress_rejects_fast_phase_literal_overrun() {
+    let suffix_cnt = 32usize;
+    let first_literals = MAX_DISTANCE;
+    let bad_literals = 1000usize;
+    let token_output_end = first_literals + MIN_MATCH_LEN - 1 + 29;
+    let original_size = token_output_end + suffix_cnt;
+
+    let mut compressed = Vec::new();
+    compressed.extend_from_slice(&(original_size as u64).to_le_bytes());
+    compressed.extend_from_slice(&(suffix_cnt as u64).to_le_bytes());
+
+    compressed.push((TOKEN_LIT_MAX as u8) << TOKEN_MATCH_BITS);
+    compressed.extend_from_slice(&0u16.to_le_bytes());
+    push_literal_extension(&mut compressed, first_literals);
+
+    compressed.push((TOKEN_LIT_MAX as u8) << TOKEN_MATCH_BITS);
+    compressed.extend_from_slice(&0u16.to_le_bytes());
+    push_literal_extension(&mut compressed, bad_literals);
+
+    compressed.extend(std::iter::repeat_n(0x11, bad_literals));
+    compressed.extend(std::iter::repeat_n(0x22, first_literals));
+    compressed.extend(std::iter::repeat_n(0x33, suffix_cnt));
+
+    assert!(compressed.len() > EXT_HEADER_SIZE + suffix_cnt);
+    let err = decompress(&compressed, original_size).unwrap_err();
     assert_eq!(err, Error::CorruptInput);
 }
 
