@@ -332,10 +332,23 @@ fn find_latest_match<S: Simd>(
 ) -> (usize, usize) {
     debug_assert!(pos > HASHTAB_LAG);
     debug_assert!(pos + MAX_MATCH_LEN <= src.len());
-    let hsh = hash4(paranoid_unsafe_call!(read_u32_le_unchecked(src, pos)));
-    let reg = paranoid_unsafe_call!(load_u8x32_unchecked(simd, src, pos));
+    let cur = paranoid_unsafe_call!(read_u32_le_unchecked(src, pos));
+    let hsh = hash4(cur);
     let lst = paranoid_unsafe_call!(ht.recover_pos_unchecked(hsh, pos));
     debug_assert!(lst + MAX_MATCH_LEN <= src.len());
+
+    if paranoid_unsafe_call!(read_u32_le_unchecked(src, lst)) != cur {
+        return (0, lst);
+    }
+
+    let cur_next = paranoid_unsafe_call!(read_u32_le_unchecked(src, pos + 4));
+    let lst_next = paranoid_unsafe_call!(read_u32_le_unchecked(src, lst + 4));
+    let diff = cur_next ^ lst_next;
+    if diff != 0 {
+        return (MIN_MATCH_LEN + (diff.trailing_zeros() as usize >> 3), lst);
+    }
+
+    let reg = paranoid_unsafe_call!(load_u8x32_unchecked(simd, src, pos));
     let ireg = paranoid_unsafe_call!(load_u8x32_unchecked(simd, src, lst));
     (lcp_loaded(reg, ireg), lst)
 }
@@ -359,8 +372,16 @@ fn find_best_match(src: &[u8], ht: &HashTable, pos: usize) -> (usize, usize) {
 
 #[cfg(feature = "paranoid")]
 fn find_latest_match(src: &[u8], ht: &LatestHashTable, pos: usize) -> (usize, usize) {
-    let hsh = hash4(read_u32_le(src, pos));
+    let cur = read_u32_le(src, pos);
+    let hsh = hash4(cur);
     let lst = ht.recover_pos(hsh, pos);
+    if read_u32_le(src, lst) != cur {
+        return (0, lst);
+    }
+    let diff = read_u32_le(src, pos + 4) ^ read_u32_le(src, lst + 4);
+    if diff != 0 {
+        return (MIN_MATCH_LEN + (diff.trailing_zeros() as usize >> 3), lst);
+    }
     (lcp(src, pos, lst), lst)
 }
 
@@ -381,14 +402,33 @@ fn batch_insert(src: &[u8], ht: &mut HashTable, hpos: &mut usize, pos: usize) {
 
 #[cfg(not(feature = "paranoid"))]
 #[inline(always)]
-fn batch_insert_latest(src: &[u8], ht: &mut LatestHashTable, hpos: &mut usize, pos: usize) {
+fn batch_insert_latest(
+    src: &[u8],
+    ht: &mut LatestHashTable,
+    hpos: &mut usize,
+    pos: usize,
+    sparse: bool,
+) {
     while pos >= *hpos + HASHTAB_LAG + BATCH {
-        for i in 0..BATCH {
-            let insert_pos = *hpos + i;
-            let hsh = hash4(paranoid_unsafe_call!(read_u32_le_unchecked(
-                src, insert_pos
-            )));
-            paranoid_unsafe_call!(ht.insert_unchecked(hsh, insert_pos));
+        macro_rules! insert {
+            ($i:literal) => {{
+                let insert_pos = *hpos + $i;
+                let hsh = hash4(paranoid_unsafe_call!(read_u32_le_unchecked(
+                    src, insert_pos
+                )));
+                paranoid_unsafe_call!(ht.insert_unchecked(hsh, insert_pos));
+            }};
+        }
+
+        insert!(0);
+        if !sparse {
+            insert!(1);
+            insert!(2);
+            insert!(3);
+            insert!(4);
+            insert!(5);
+            insert!(6);
+            insert!(7);
         }
         *hpos += BATCH;
     }
@@ -408,11 +448,24 @@ fn batch_insert(src: &[u8], ht: &mut HashTable, hpos: &mut usize, pos: usize) {
 
 #[cfg(feature = "paranoid")]
 #[inline(always)]
-fn batch_insert_latest(src: &[u8], ht: &mut LatestHashTable, hpos: &mut usize, pos: usize) {
+fn batch_insert_latest(
+    src: &[u8],
+    ht: &mut LatestHashTable,
+    hpos: &mut usize,
+    pos: usize,
+    sparse: bool,
+) {
     while pos >= *hpos + HASHTAB_LAG + BATCH {
-        for i in 0..BATCH {
-            let hsh = hash4(read_u32_le(src, *hpos + i));
-            ht.insert(hsh, *hpos + i);
+        let insert_pos = *hpos;
+        let hsh = hash4(read_u32_le(src, insert_pos));
+        ht.insert(hsh, insert_pos);
+
+        if !sparse {
+            for i in 1..BATCH {
+                let insert_pos = *hpos + i;
+                let hsh = hash4(read_u32_le(src, insert_pos));
+                ht.insert(hsh, insert_pos);
+            }
         }
         *hpos += BATCH;
     }
@@ -657,6 +710,7 @@ fn loose_compress_impl<S: Simd>(simd: S, src: &[u8], dst: &mut [u8]) -> usize {
     const FIRE_AT: usize = 6;
     const REGIME_CAP: i64 = 64;
     const REGIME_THRESHOLD: i64 = 32;
+    const SPARSE_INSERT_AT: usize = 8;
 
     let src_size = src.len();
 
@@ -687,7 +741,7 @@ fn loose_compress_impl<S: Simd>(simd: S, src: &[u8], dst: &mut [u8]) -> usize {
     let mut regime: i64 = 0;
 
     while pos + MAX_MATCH_LEN <= match_end_limit {
-        batch_insert_latest(src, &mut ht, &mut hpos, pos);
+        batch_insert_latest(src, &mut ht, &mut hpos, pos, miss_run >= SPARSE_INSERT_AT);
 
         let (mut match_len, mut lst) = if pos > HASHTAB_LAG {
             find_latest_match(simd, src, &ht, pos)
@@ -753,6 +807,39 @@ fn loose_compress_impl<S: Simd>(simd: S, src: &[u8], dst: &mut [u8]) -> usize {
         lit = pos;
         pos = pos.max(pos_safe_bound);
         cand_len = 0;
+
+        loop {
+            if pos + MAX_MATCH_LEN > match_end_limit {
+                break;
+            }
+
+            batch_insert_latest(src, &mut ht, &mut hpos, pos, false);
+            let (chain_match_len, chain_lst) = if pos > HASHTAB_LAG {
+                find_latest_match(simd, src, &ht, pos)
+            } else {
+                (0, 0)
+            };
+
+            if chain_match_len < MIN_MATCH_LEN {
+                break;
+            }
+
+            let dis = pos - chain_lst;
+            emit_token(
+                dst,
+                &mut dlpos,
+                &mut drpos,
+                src,
+                pos,
+                0,
+                chain_match_len,
+                dis,
+            );
+
+            regime = (regime - 1).clamp(0, REGIME_CAP);
+            pos += chain_match_len;
+            lit = pos;
+        }
     }
 
     if drpos < dst_cap {
@@ -777,6 +864,7 @@ fn loose_compress_impl(src: &[u8], dst: &mut [u8]) -> usize {
     const FIRE_AT: usize = 6;
     const REGIME_CAP: i64 = 64;
     const REGIME_THRESHOLD: i64 = 32;
+    const SPARSE_INSERT_AT: usize = 8;
 
     let src_size = src.len();
 
@@ -807,7 +895,7 @@ fn loose_compress_impl(src: &[u8], dst: &mut [u8]) -> usize {
     let mut regime: i64 = 0;
 
     while pos + MAX_MATCH_LEN <= match_end_limit {
-        batch_insert_latest(src, &mut ht, &mut hpos, pos);
+        batch_insert_latest(src, &mut ht, &mut hpos, pos, miss_run >= SPARSE_INSERT_AT);
 
         let (mut match_len, mut lst) = if pos > HASHTAB_LAG {
             find_latest_match(src, &ht, pos)
@@ -873,6 +961,39 @@ fn loose_compress_impl(src: &[u8], dst: &mut [u8]) -> usize {
         lit = pos;
         pos = pos.max(pos_safe_bound);
         cand_len = 0;
+
+        loop {
+            if pos + MAX_MATCH_LEN > match_end_limit {
+                break;
+            }
+
+            batch_insert_latest(src, &mut ht, &mut hpos, pos, false);
+            let (chain_match_len, chain_lst) = if pos > HASHTAB_LAG {
+                find_latest_match(src, &ht, pos)
+            } else {
+                (0, 0)
+            };
+
+            if chain_match_len < MIN_MATCH_LEN {
+                break;
+            }
+
+            let dis = pos - chain_lst;
+            emit_token(
+                dst,
+                &mut dlpos,
+                &mut drpos,
+                src,
+                pos,
+                0,
+                chain_match_len,
+                dis,
+            );
+
+            regime = (regime - 1).clamp(0, REGIME_CAP);
+            pos += chain_match_len;
+            lit = pos;
+        }
     }
 
     if drpos < dst_cap {
