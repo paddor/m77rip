@@ -21,4 +21,7 @@ macro_rules! paranoid_unsafe_call {
 
 mod encode;
 
-pub use encode::{compress, compress_bound, compress_into, compress_into_level, compress_level};
+pub use encode::{
+    compress, compress_bound, compress_bound_level, compress_into, compress_into_level,
+    compress_level,
+};

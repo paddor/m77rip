@@ -46,6 +46,26 @@ pub(crate) fn read_u16_le(src: &[u8], pos: usize) -> u16 {
     u16::from_le_bytes(src[pos..pos + 2].try_into().unwrap())
 }
 
+/// Read 4 bytes as little-endian u32 without bounds checking.
+///
+/// # Safety
+///
+/// `pos + 4` must be within `src`.
+#[cfg(not(feature = "paranoid"))]
+#[inline(always)]
+pub(crate) unsafe fn read_u32_le(src: &[u8], pos: usize) -> u32 {
+    debug_assert!(pos + 4 <= src.len());
+    // SAFETY: Caller guarantees four readable bytes starting at `pos`.
+    u32::from_le(unsafe { (src.as_ptr().add(pos) as *const u32).read_unaligned() })
+}
+
+/// Read 4 bytes as little-endian u32 (paranoid: bounds-checked).
+#[cfg(feature = "paranoid")]
+#[inline(always)]
+pub(crate) fn read_u32_le(src: &[u8], pos: usize) -> u32 {
+    u32::from_le_bytes(src[pos..pos + 4].try_into().unwrap())
+}
+
 /// Copy exactly `len` bytes from `src[src_pos..]` to `dst[dst_pos..]`.
 ///
 /// # Safety

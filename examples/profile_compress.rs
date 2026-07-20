@@ -88,7 +88,7 @@ fn main() {
         // SAFETY: C function has no pointer arguments and accepts any u64 size.
         (unsafe { misa77_compress_bound(data.len() as u64, level as u8) }) as usize
     } else {
-        m77rip::compress_bound(data.len())
+        m77rip::compress_bound_level(data.len(), level).unwrap()
     };
     let mut comp_buf = vec![0u8; bound];
 

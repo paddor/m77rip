@@ -49,7 +49,7 @@ assert_eq!(written, size);
 ![Per-file pipeline](https://raw.githubusercontent.com/paddor/m77rip/main/doc/charts/x86_64/pipeline.svg)
 
 Stacked bars show level 0 encode + transfer at 1 GB/s + decode. Lower is
-better. Benchmarks use misa77 v0.3.0, Silesia corpus, single-threaded on
+better. Benchmarks use misa77 v0.4.0, Silesia corpus, single-threaded on
 x86_64 (AVX2). Best of 10 rounds at 20 ms each.
 
 ### Default build
@@ -107,8 +107,9 @@ instead of runtime cpuid. Compile with `-C target-cpu=native` or
 
 The encoder requires `std` and has only been tested on 64-bit targets.
 
-`compress_level` accepts levels `-1`, `0`, and `1`. Level `-1` is fastest,
-level `0` is the C++-ratio middle ground, and level `1` favors ratio.
+`compress_level` accepts levels `-1`, `0`, `1`, and `2`. Level `-1` is
+fastest, level `0` is the C++-ratio middle ground, level `1` favors ratio,
+and level `2` writes the misa77 v0.4 heavy format.
 
 ## License
 

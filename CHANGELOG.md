@@ -4,6 +4,9 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+- Added misa77 v0.4 level 2 heavy-format encode/decode compatibility.
+- Added level-specific compression bounds through `compress_bound_level`.
+
 ## [0.1.2] - 2026-07-19
 
 - Reduced the published root crate package to runtime/library files and the

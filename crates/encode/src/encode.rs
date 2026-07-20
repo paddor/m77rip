@@ -14,14 +14,33 @@ const RING_BATCH: usize = 8;
 const RING_WIDTH: usize = 16;
 const CHAIN_AFTER: usize = 8;
 const SKIP_SHIFT: usize = 6;
+const HEAVY_HASH_BITS: u32 = 21;
+const HEAVY_HASH_SIZE: usize = 1 << HEAVY_HASH_BITS;
+const HEAVY_RING_SIZE: usize = 1 << (HEAVY_WIN_BITS + 1);
+const HEAVY_RING_MASK: usize = HEAVY_RING_SIZE - 1;
+const HEAVY_NIL: u32 = u32::MAX;
+const HEAVY_MAX_CHAIN: usize = 2048;
+const HEAVY_NICE_LEN: usize = HEAVY_MAX_MATCH_LEN;
+const HEAVY_ACCEPT_LEN: usize = 5;
+const HEAVY_LAZY_GAIN: usize = 1;
+const HEAVY_COND_FLAG_THRESH_NUM: usize = 14;
+const HEAVY_COND_FLAG_THRESH_DEN: usize = 100;
 
 const _: () = assert!(LATEST_INSERTS_PER_BATCH == 8);
 const _: () = assert!(LATEST_INSERTS_PER_BATCH <= LATEST_BATCH);
 const _: () = assert!(RING_WIDTH <= u8::MAX as usize + 1);
+const _: () = assert!(HEAVY_MIN_DISTANCE > VECTOR_WIDTH);
+const _: () = assert!(HEAVY_RING_SIZE == 2 * HEAVY_NDIS);
 
 #[inline(always)]
 fn hash4(val: u32) -> usize {
     (val.wrapping_mul(HASH_MUL) >> 16) as usize
+}
+
+#[inline(always)]
+fn hash5(src: &[u8], pos: usize) -> usize {
+    let val = paranoid_unsafe_call!(read_u64_le(src, pos)) & 0x0000_00FF_FFFF_FFFF;
+    ((val.wrapping_mul(0x9E37_79B1_85EB_CA87)) >> (64 - HEAVY_HASH_BITS)) as usize
 }
 
 #[inline(always)]
@@ -36,6 +55,21 @@ fn recover_entry_pos(entry: u16, pos: usize) -> usize {
 #[inline(always)]
 fn read_u32_le(src: &[u8], pos: usize) -> u32 {
     u32::from_le_bytes(src[pos..pos + 4].try_into().unwrap())
+}
+
+#[cfg(not(feature = "paranoid"))]
+#[inline(always)]
+unsafe fn read_u64_le(src: &[u8], pos: usize) -> u64 {
+    debug_assert!(pos + 8 <= src.len());
+    // SAFETY: caller guarantees `pos..pos + 8` is inside `src`; unaligned
+    // reads are allowed.
+    unsafe { ptr::read_unaligned(src.as_ptr().add(pos).cast::<u64>()).to_le() }
+}
+
+#[cfg(feature = "paranoid")]
+#[inline(always)]
+fn read_u64_le(src: &[u8], pos: usize) -> u64 {
+    u64::from_le_bytes(src[pos..pos + 8].try_into().unwrap())
 }
 
 #[cfg(not(feature = "paranoid"))]
@@ -95,8 +129,64 @@ fn lcp_portable(src: &[u8], a: usize, b: usize, limit: usize) -> usize {
     off
 }
 
+#[cfg(not(feature = "paranoid"))]
+#[inline(always)]
+fn lcp_heavy<S: Simd>(simd: S, src: &[u8], a: usize, b: usize, limit: usize) -> usize {
+    debug_assert!(a + limit <= src.len());
+    debug_assert!(b + limit <= src.len());
+
+    let mut off = 0usize;
+    while off + VECTOR_WIDTH <= limit {
+        let av = paranoid_unsafe_call!(load_u8x32_unchecked(simd, src, a + off));
+        let bv = paranoid_unsafe_call!(load_u8x32_unchecked(simd, src, b + off));
+        let len = lcp_loaded(av, bv);
+        off += len;
+        if len < VECTOR_WIDTH {
+            return off;
+        }
+    }
+    while off + 8 <= limit {
+        let diff = paranoid_unsafe_call!(read_u64_le(src, a + off))
+            ^ paranoid_unsafe_call!(read_u64_le(src, b + off));
+        if diff != 0 {
+            return off + (diff.trailing_zeros() as usize >> 3);
+        }
+        off += 8;
+    }
+    while off < limit && src[a + off] == src[b + off] {
+        off += 1;
+    }
+    off
+}
+
+#[cfg(feature = "paranoid")]
+#[inline(always)]
+fn lcp_heavy(src: &[u8], a: usize, b: usize, limit: usize) -> usize {
+    lcp_portable(src, a, b, limit)
+}
+
 /// Returns the maximum compressed size for a given input size.
 pub fn compress_bound(src_size: usize) -> usize {
+    compress_bound_light(src_size).max(compress_bound_heavy(src_size))
+}
+
+/// Returns the maximum compressed size for a given input size and level.
+pub fn compress_bound_level(src_size: usize, level: i8) -> Result<usize, Error> {
+    validate_level(level)?;
+    Ok(compress_bound_for_level(src_size, level))
+}
+
+#[inline]
+fn compress_bound_for_level(src_size: usize, level: i8) -> usize {
+    if level == 2 {
+        compress_bound_heavy(src_size)
+    } else {
+        compress_bound_light(src_size)
+    }
+}
+
+#[inline]
+fn compress_bound_light(src_size: usize) -> usize {
     if src_size <= SMALL_LIM {
         return HEADER_SIZE.saturating_add(src_size);
     }
@@ -106,22 +196,30 @@ pub fn compress_bound(src_size: usize) -> usize {
         .saturating_add(16)
 }
 
+#[inline]
+fn compress_bound_heavy(src_size: usize) -> usize {
+    EXT_HEADER_SIZE
+        .saturating_add(src_size)
+        .saturating_add(src_size / 32)
+        .saturating_add(64)
+}
+
 /// Compresses `input` into the misa77 stream format (level 1, default).
 pub fn compress(input: &[u8]) -> Vec<u8> {
-    let mut dst = vec![0u8; compress_bound(input.len())];
+    let mut dst = vec![0u8; compress_bound_for_level(input.len(), 1)];
     let written = compress_dispatch(input, &mut dst, 1);
     dst.truncate(written);
     dst
 }
 
 /// Compresses `input` at the given level (-1 = fastest, 0 = fast,
-/// 1 = default).
+/// 1 = default, 2 = heavy).
 ///
 /// Returns [`Error::InvalidLevel`](m77rip_core::Error::InvalidLevel) for any
 /// other level.
 pub fn compress_level(input: &[u8], level: i8) -> Result<Vec<u8>, Error> {
     validate_level(level)?;
-    let mut dst = vec![0u8; compress_bound(input.len())];
+    let mut dst = vec![0u8; compress_bound_for_level(input.len(), level)];
     let written = compress_dispatch(input, &mut dst, level);
     dst.truncate(written);
     Ok(dst)
@@ -131,7 +229,7 @@ pub fn compress_level(input: &[u8], level: i8) -> Result<Vec<u8>, Error> {
 ///
 /// Returns the number of bytes written to `dst`.
 pub fn compress_into(input: &[u8], dst: &mut [u8]) -> Result<usize, Error> {
-    let bound = compress_bound(input.len());
+    let bound = compress_bound_for_level(input.len(), 1);
     if dst.len() < bound {
         return Err(Error::OutputTooSmall {
             need: bound,
@@ -146,7 +244,7 @@ pub fn compress_into(input: &[u8], dst: &mut [u8]) -> Result<usize, Error> {
 /// Returns the number of bytes written to `dst`.
 pub fn compress_into_level(input: &[u8], dst: &mut [u8], level: i8) -> Result<usize, Error> {
     validate_level(level)?;
-    let bound = compress_bound(input.len());
+    let bound = compress_bound_for_level(input.len(), level);
     if dst.len() < bound {
         return Err(Error::OutputTooSmall {
             need: bound,
@@ -158,7 +256,7 @@ pub fn compress_into_level(input: &[u8], dst: &mut [u8], level: i8) -> Result<us
 
 #[inline]
 fn validate_level(level: i8) -> Result<(), Error> {
-    if (-1..=1).contains(&level) {
+    if (-1..=2).contains(&level) {
         Ok(())
     } else {
         Err(Error::InvalidLevel { level })
@@ -171,6 +269,7 @@ fn compress_dispatch(src: &[u8], dst: &mut [u8], level: i8) -> usize {
         -1 => compress_dispatch_level_speed(src, dst),
         0 => compress_dispatch_level0(src, dst),
         1 => compress_dispatch_level1(src, dst),
+        2 => compress_dispatch_level2(src, dst),
         _ => unreachable!(),
     }
 }
@@ -196,12 +295,20 @@ fn compress_dispatch_level1(src: &[u8], dst: &mut [u8]) -> usize {
     fearless_simd::dispatch!(level_obj, simd => default_compress(simd, src, dst))
 }
 
+#[cfg(not(feature = "paranoid"))]
+#[inline(never)]
+fn compress_dispatch_level2(src: &[u8], dst: &mut [u8]) -> usize {
+    let level_obj = fearless_simd::Level::new();
+    fearless_simd::dispatch!(level_obj, simd => heavy_compress(simd, src, dst))
+}
+
 #[cfg(feature = "paranoid")]
 fn compress_dispatch(src: &[u8], dst: &mut [u8], level: i8) -> usize {
     match level {
         -1 => speed_compress(src, dst),
         0 => loose_compress(src, dst),
         1 => default_compress(src, dst),
+        2 => heavy_compress(src, dst),
         _ => unreachable!(),
     }
 }
@@ -315,6 +422,130 @@ impl RingHashTable {
         debug_assert!(hsh < HASH_SIZE);
         unsafe { self.buckets.get_unchecked(hsh) }
     }
+}
+
+struct HeavyHashChains {
+    head: Box<[u32]>,
+    prev: Box<[u32]>,
+}
+
+impl HeavyHashChains {
+    fn new() -> Self {
+        Self {
+            head: vec![HEAVY_NIL; HEAVY_HASH_SIZE].into_boxed_slice(),
+            prev: vec![HEAVY_NIL; HEAVY_RING_SIZE].into_boxed_slice(),
+        }
+    }
+
+    #[inline(always)]
+    fn insert(&mut self, src: &[u8], pos: usize) {
+        let h = hash5(src, pos);
+        self.prev[pos & HEAVY_RING_MASK] = self.head[h];
+        self.head[h] = pos as u32;
+    }
+}
+
+#[derive(Clone, Copy)]
+struct HeavyMatch {
+    len: usize,
+    dis: usize,
+}
+
+#[inline(always)]
+fn find_heavy_match_with<F>(
+    src: &[u8],
+    chains: &HeavyHashChains,
+    pos: usize,
+    seed: usize,
+    match_end_limit: usize,
+    mut lcp_at: F,
+) -> HeavyMatch
+where
+    F: FnMut(usize, usize, usize) -> usize,
+{
+    if pos + MIN_MATCH_LEN > match_end_limit {
+        return HeavyMatch { len: 0, dis: 0 };
+    }
+
+    let limit = HEAVY_MAX_MATCH_LEN.min(match_end_limit - pos);
+    let mut best_len = MIN_MATCH_LEN - 1;
+    let mut best_dis = 0usize;
+
+    if seed >= HEAVY_MIN_DISTANCE && seed <= HEAVY_MAX_DISTANCE.min(pos) {
+        let len = lcp_at(pos, pos - seed, limit);
+        if len >= MIN_MATCH_LEN {
+            best_len = len;
+            best_dis = seed;
+        }
+    }
+
+    if best_len < HEAVY_NICE_LEN {
+        let h = hash5(src, pos);
+        let mut candidate = chains.head[h];
+        let mut steps = 0usize;
+        while candidate != HEAVY_NIL && steps < HEAVY_MAX_CHAIN {
+            let c = candidate as usize;
+            if c > pos {
+                break;
+            }
+            let dis = pos - c;
+            if dis > HEAVY_MAX_DISTANCE {
+                break;
+            }
+            if dis >= HEAVY_MIN_DISTANCE {
+                steps += 1;
+                if src[pos - dis + best_len] == src[pos + best_len] {
+                    let len = lcp_at(pos, pos - dis, limit);
+                    if len > best_len {
+                        best_len = len;
+                        best_dis = dis;
+                        if len >= HEAVY_NICE_LEN {
+                            break;
+                        }
+                    }
+                }
+            }
+            candidate = chains.prev[c & HEAVY_RING_MASK];
+        }
+    }
+
+    if best_len < MIN_MATCH_LEN {
+        HeavyMatch { len: 0, dis: 0 }
+    } else {
+        HeavyMatch {
+            len: best_len,
+            dis: best_dis,
+        }
+    }
+}
+
+#[cfg(not(feature = "paranoid"))]
+#[inline(always)]
+fn find_heavy_match<S: Simd>(
+    simd: S,
+    src: &[u8],
+    chains: &HeavyHashChains,
+    pos: usize,
+    seed: usize,
+    match_end_limit: usize,
+) -> HeavyMatch {
+    find_heavy_match_with(src, chains, pos, seed, match_end_limit, |a, b, limit| {
+        lcp_heavy(simd, src, a, b, limit)
+    })
+}
+
+#[cfg(feature = "paranoid")]
+#[inline(always)]
+fn find_heavy_match(
+    src: &[u8],
+    chains: &HeavyHashChains,
+    pos: usize,
+    seed: usize,
+    match_end_limit: usize,
+) -> HeavyMatch {
+    find_heavy_match_with(src, chains, pos, seed, match_end_limit, |a, b, limit| {
+        lcp_heavy(src, a, b, limit)
+    })
 }
 
 #[cfg(not(feature = "paranoid"))]
@@ -571,6 +802,61 @@ fn emit_match_token(dst: &mut [u8], dlpos: &mut usize, match_len: usize, dis: us
     let dbytes = (dis - MIN_DISTANCE) as u16;
     dst[*dlpos..*dlpos + 2].copy_from_slice(&dbytes.to_le_bytes());
     *dlpos += 2;
+}
+
+#[allow(clippy::too_many_arguments)]
+#[inline(always)]
+fn emit_heavy_token(
+    dst: &mut [u8],
+    dlpos: &mut usize,
+    drpos: &mut usize,
+    src: &[u8],
+    lit: usize,
+    lit_len: usize,
+    match_len_code: usize,
+    dis: usize,
+) {
+    debug_assert!(match_len_code > 0);
+    debug_assert!(match_len_code < HEAVY_LEN_OF.len());
+    debug_assert!((HEAVY_MIN_DISTANCE..=HEAVY_MAX_DISTANCE).contains(&dis));
+
+    let lrem = lit_len.min(HEAVY_TOKEN_LIT_MAX);
+    let token = ((lrem as u32) << 26)
+        | ((match_len_code as u32) << 20)
+        | (((dis - HEAVY_MIN_DISTANCE) as u32) & HEAVY_DIS_MASK);
+    dst[*dlpos..*dlpos + 4].copy_from_slice(&token.to_le_bytes());
+    *dlpos += 4;
+
+    if lrem == HEAVY_TOKEN_LIT_MAX {
+        let mut remaining = lit_len - HEAVY_TOKEN_LIT_MAX;
+        while remaining >= 255 {
+            dst[*dlpos] = 255;
+            *dlpos += 1;
+            remaining -= 255;
+        }
+        dst[*dlpos] = remaining as u8;
+        *dlpos += 1;
+    }
+
+    *drpos -= lit_len;
+    dst[*drpos..*drpos + lit_len].copy_from_slice(&src[lit..lit + lit_len]);
+}
+
+fn heavy_raw(src: &[u8], dst: &mut [u8]) -> usize {
+    let src_size = src.len();
+    let flags = FLAG_HEAVY as u64;
+    dst[0..8].copy_from_slice(&((src_size as u64) | (flags << FLAG_SHIFT)).to_le_bytes());
+    let mut dlpos = HEADER_SIZE;
+
+    if src_size <= HEAVY_SMALL_LIM {
+        dst[dlpos..dlpos + src_size].copy_from_slice(src);
+        return dlpos + src_size;
+    }
+
+    dst[dlpos..dlpos + 8].copy_from_slice(&(src_size as u64).to_le_bytes());
+    dlpos += 8;
+    dst[dlpos..dlpos + src_size].copy_from_slice(src);
+    dlpos + src_size
 }
 
 #[cfg(not(feature = "paranoid"))]
@@ -1233,6 +1519,144 @@ fn loose_compress_impl(src: &[u8], dst: &mut [u8]) -> usize {
     dlpos
 }
 
+#[cfg(not(feature = "paranoid"))]
+#[inline(always)]
+fn heavy_compress<S: Simd>(simd: S, src: &[u8], dst: &mut [u8]) -> usize {
+    heavy_compress_body(src, dst, |src, chains, pos, seed, match_end_limit| {
+        find_heavy_match(simd, src, chains, pos, seed, match_end_limit)
+    })
+}
+
+#[cfg(feature = "paranoid")]
+#[inline(always)]
+fn heavy_compress(src: &[u8], dst: &mut [u8]) -> usize {
+    heavy_compress_body(src, dst, find_heavy_match)
+}
+
+#[inline(always)]
+fn heavy_compress_body<F>(src: &[u8], dst: &mut [u8], mut find_match: F) -> usize
+where
+    F: FnMut(&[u8], &HeavyHashChains, usize, usize, usize) -> HeavyMatch,
+{
+    let src_size = src.len();
+    if src_size <= HEAVY_SMALL_LIM || src_size > u32::MAX as usize {
+        return heavy_raw(src, dst);
+    }
+
+    let mut dlpos = 0usize;
+    let dst_cap = dst.len();
+    let mut drpos = dst_cap;
+    let header = (src_size as u64) | ((FLAG_HEAVY as u64) << FLAG_SHIFT);
+    dst[dlpos..dlpos + 8].copy_from_slice(&header.to_le_bytes());
+    dlpos += 8;
+
+    let literal_suffix_pos = dlpos;
+    dlpos += 8;
+    let match_end_limit = src_size - HEAVY_LITERAL_SUFFIX;
+
+    let mut chains = HeavyHashChains::new();
+    let mut pos = 0usize;
+    let mut hpos = 0usize;
+    let mut lit = 0usize;
+    let mut miss_run = 0usize;
+    let mut seed = 0usize;
+    let mut tokens = 0usize;
+    let mut long_matches = 0usize;
+
+    while pos + MIN_MATCH_LEN <= match_end_limit {
+        while hpos <= pos {
+            chains.insert(src, hpos);
+            hpos += 1;
+        }
+
+        let m0 = find_match(src, &chains, pos, seed, match_end_limit);
+        if m0.len < HEAVY_ACCEPT_LEN {
+            pos += 1 + (miss_run >> SKIP_SHIFT);
+            miss_run += 1;
+            continue;
+        }
+
+        let mut match_start = pos;
+        let mut match_len = m0.len;
+        let mut match_dis = m0.dis;
+
+        loop {
+            let npos = match_start + 1;
+            if npos + MIN_MATCH_LEN > match_end_limit {
+                break;
+            }
+
+            while hpos <= npos {
+                chains.insert(src, hpos);
+                hpos += 1;
+            }
+
+            let next = find_match(src, &chains, npos, seed, match_end_limit);
+            if next.len < HEAVY_ACCEPT_LEN {
+                break;
+            }
+
+            let cur_use = HEAVY_LEN_FLOOR[match_len.min(255)] as usize;
+            let next_use = HEAVY_LEN_FLOOR[next.len.min(255)] as usize;
+            if next_use < cur_use + HEAVY_LAZY_GAIN {
+                break;
+            }
+
+            match_start = npos;
+            match_len = next.len;
+            match_dis = next.dis;
+        }
+
+        while match_start > lit
+            && match_start > match_dis
+            && match_len < HEAVY_MAX_MATCH_LEN
+            && src[match_start - 1] == src[match_start - match_dis - 1]
+        {
+            match_start -= 1;
+            match_len += 1;
+        }
+
+        match_len = match_len.min(HEAVY_MAX_MATCH_LEN);
+        let use_len = HEAVY_LEN_FLOOR[match_len.min(255)] as usize;
+        let code = HEAVY_CODE_FLOOR[match_len.min(255)] as usize;
+        debug_assert!(use_len >= MIN_MATCH_LEN);
+        debug_assert!(code > 0);
+
+        tokens += 1;
+        long_matches += usize::from(use_len > VECTOR_WIDTH);
+
+        let lit_len = match_start - lit;
+        emit_heavy_token(
+            dst, &mut dlpos, &mut drpos, src, lit, lit_len, code, match_dis,
+        );
+
+        seed = match_dis;
+        pos = match_start + use_len;
+        lit = pos;
+        miss_run = 0;
+    }
+
+    if drpos < dst_cap {
+        let lit_data_len = dst_cap - drpos;
+        dst.copy_within(drpos..dst_cap, dlpos);
+        dlpos += lit_data_len;
+    }
+
+    let literal_suffix_cnt = src_size - lit;
+    dst[literal_suffix_pos..literal_suffix_pos + 8]
+        .copy_from_slice(&(literal_suffix_cnt as u64).to_le_bytes());
+    dst[dlpos..dlpos + literal_suffix_cnt].copy_from_slice(&src[lit..]);
+    dlpos += literal_suffix_cnt;
+
+    let cond = tokens != 0
+        && long_matches * HEAVY_COND_FLAG_THRESH_DEN < HEAVY_COND_FLAG_THRESH_NUM * tokens;
+    let flags = (FLAG_HEAVY | if cond { FLAG_HEAVY_COND } else { 0 }) as u64;
+    let header = (src_size as u64) | (flags << FLAG_SHIFT);
+    dst[0..8].copy_from_slice(&header.to_le_bytes());
+
+    dlpos
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1283,18 +1707,22 @@ mod tests {
     }
 
     #[test]
+    fn compress_bound_covers_level2() {
+        let data = vec![0x42; HEAVY_SMALL_LIM];
+        let compressed = compress_level(&data, 2).unwrap();
+        assert!(compressed.len() <= compress_bound(data.len()));
+        assert!(compressed.len() <= compress_bound_level(data.len(), 2).unwrap());
+    }
+
+    #[test]
     fn invalid_level_is_rejected() {
-        assert_eq!(
-            compress_level(b"input", 2),
-            Err(Error::InvalidLevel { level: 2 })
-        );
-        assert_eq!(
-            compress_into_level(b"input", &mut [0; 64], 2),
-            Err(Error::InvalidLevel { level: 2 })
-        );
         assert_eq!(
             compress_level(b"input", -2),
             Err(Error::InvalidLevel { level: -2 })
+        );
+        assert_eq!(
+            compress_into_level(b"input", &mut [0; 64], 3),
+            Err(Error::InvalidLevel { level: 3 })
         );
     }
 }
@@ -1420,5 +1848,60 @@ mod kani_proofs {
         };
 
         assert!((updated as usize) < RING_WIDTH);
+    }
+
+    #[kani::proof]
+    #[cfg(not(feature = "paranoid"))]
+    fn hash5_stays_inside_heavy_hash_table() {
+        let src: [u8; 8] = kani::any();
+        let hsh = hash5(&src, 0);
+        assert!(hsh < HEAVY_HASH_SIZE);
+    }
+
+    #[kani::proof]
+    fn heavy_len_floor_tables_are_valid() {
+        let len: u8 = kani::any();
+        let len = len as usize;
+        let floor = HEAVY_LEN_FLOOR[len] as usize;
+        let code = HEAVY_CODE_FLOOR[len] as usize;
+
+        assert!(floor <= len);
+        assert!(code < HEAVY_LEN_OF.len());
+        assert_eq!(HEAVY_LEN_OF[code] as usize, floor);
+        if len >= MIN_MATCH_LEN {
+            assert!(floor >= MIN_MATCH_LEN);
+        }
+    }
+
+    #[kani::proof]
+    #[cfg(not(feature = "paranoid"))]
+    fn heavy_matcher_reads_are_in_bounds() {
+        let src_len: usize = kani::any();
+        let pos: usize = kani::any();
+
+        kani::assume(src_len >= HEAVY_LITERAL_SUFFIX);
+        let match_end_limit = src_len - HEAVY_LITERAL_SUFFIX;
+        let pos_after_min = pos.checked_add(MIN_MATCH_LEN);
+        kani::assume(pos_after_min.is_some());
+        kani::assume(pos_after_min.unwrap() <= match_end_limit);
+
+        let limit = HEAVY_MAX_MATCH_LEN.min(match_end_limit - pos);
+        assert!(pos.checked_add(8).unwrap() <= src_len);
+        assert!(pos.checked_add(limit).unwrap() <= src_len);
+
+        let candidate: usize = kani::any();
+        kani::assume(candidate <= pos);
+        let dis = pos - candidate;
+        kani::assume(dis >= HEAVY_MIN_DISTANCE);
+        kani::assume(dis <= HEAVY_MAX_DISTANCE);
+
+        assert!(candidate.checked_add(8).unwrap() <= src_len);
+        assert!(candidate.checked_add(limit).unwrap() <= src_len);
+    }
+
+    #[kani::proof]
+    fn heavy_ring_index_stays_in_bounds() {
+        let pos: usize = kani::any();
+        assert!((pos & HEAVY_RING_MASK) < HEAVY_RING_SIZE);
     }
 }

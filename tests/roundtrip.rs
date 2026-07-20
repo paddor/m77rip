@@ -5,6 +5,9 @@ use std::iter;
 
 #[cfg(feature = "c-reference")]
 unsafe extern "C" {
+    fn misa77_compress_bound(src_size: u64, level: u8) -> u64;
+    fn misa77_compress(src: *const u8, src_size: u64, dst: *mut u8, dst_cap: u64, level: u8)
+    -> u64;
     fn misa77_decompress(src: *const u8, src_size: u64, dst: *mut u8, dst_cap: u64) -> u64;
 }
 
@@ -170,6 +173,29 @@ fn level0_1k() {
 
 #[test]
 #[cfg_attr(miri, ignore)]
+fn level2_1k() {
+    let data = compression1k();
+    let compressed = m77rip::compress_level(data, 2).unwrap();
+    let decompressed = m77rip::decompress(&compressed, data.len()).unwrap();
+    assert_eq!(decompressed, data);
+}
+
+#[test]
+#[cfg_attr(miri, ignore)]
+fn level2_100k() {
+    let text = b"the quick brown fox jumps over the lazy dog; test payload\n";
+    let mut data = Vec::new();
+    while data.len() < 100_000 {
+        data.extend_from_slice(text);
+    }
+    data.truncate(100_000);
+    let compressed = m77rip::compress_level(&data, 2).unwrap();
+    let decompressed = m77rip::decompress(&compressed, data.len()).unwrap();
+    assert_eq!(decompressed, data);
+}
+
+#[test]
+#[cfg_attr(miri, ignore)]
 fn level0_dickens_chunks() {
     let Ok(data) = std::fs::read("corpus/silesia/dickens") else {
         return;
@@ -217,7 +243,7 @@ fn cpp_decompresses_m77rip_output() {
     cases.push(repeated);
 
     for data in cases {
-        for level in [-1, 0, 1] {
+        for level in [-1, 0, 1, 2] {
             let compressed = m77rip::compress_level(&data, level).unwrap();
             let mut out = vec![0u8; data.len()];
             // SAFETY: pointers come from live slices. `out` capacity matches
@@ -233,6 +259,39 @@ fn cpp_decompresses_m77rip_output() {
             assert_eq!(written, data.len(), "C++ decode size mismatch");
             assert_eq!(out, data, "C++ decode content mismatch");
         }
+    }
+}
+
+#[test]
+#[cfg(feature = "c-reference")]
+fn m77rip_decompresses_cpp_l2_output() {
+    let cases: Vec<Vec<u8>> = vec![
+        b"".to_vec(),
+        b"small payload".to_vec(),
+        compression1k().to_vec(),
+        (0..=255).cycle().take(10_000).collect(),
+    ];
+
+    for data in cases {
+        // SAFETY: C function has no pointer arguments and accepts any u64 size.
+        let bound = unsafe { misa77_compress_bound(data.len() as u64, 2) } as usize;
+        let mut compressed = vec![0u8; bound];
+        // SAFETY: pointers come from live slices. `compressed` has the bound
+        // returned by the same C++ compressor level.
+        let written = unsafe {
+            misa77_compress(
+                data.as_ptr(),
+                data.len() as u64,
+                compressed.as_mut_ptr(),
+                compressed.len() as u64,
+                2,
+            )
+        } as usize;
+        assert!(written > 0, "C++ level 2 compression failed");
+        compressed.truncate(written);
+
+        let decompressed = m77rip::decompress(&compressed, data.len()).unwrap();
+        assert_eq!(decompressed, data, "Rust decode of C++ level 2 mismatch");
     }
 }
 

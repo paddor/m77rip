@@ -26,6 +26,8 @@ const _: () = assert!(LITERAL_SUFFIX >= VECTOR_WIDTH);
 const _: () = assert!(MAX_INLINE_LIT_LEN + VECTOR_WIDTH - (RED_SLACK + 1) <= LITERAL_SUFFIX);
 #[cfg(not(feature = "paranoid"))]
 const _: () = assert!(MAX_INLINE_LIT_LEN + MAX_TOKEN_MATCH_LEN - (RED_SLACK + 1) <= LITERAL_SUFFIX);
+const _: () = assert!(HEAVY_MIN_DISTANCE > VECTOR_WIDTH);
+const _: () = assert!(HEAVY_LITERAL_SUFFIX >= 2 * VECTOR_WIDTH);
 
 #[cfg(not(feature = "paranoid"))]
 #[allow(unused_imports)]
@@ -112,6 +114,21 @@ fn guarded_step_default(
     Ok(())
 }
 
+#[inline]
+fn header_fields(src: &[u8]) -> Result<(usize, u8), Error> {
+    let header = src
+        .get(..HEADER_SIZE)
+        .ok_or(Error::InputTooShort)
+        .map(|header| u64::from_le_bytes(header.try_into().unwrap()))?;
+    let original_size_u64 = header & SIZE_MASK;
+    let original_size = original_size_u64
+        .try_into()
+        .map_err(|_| Error::SizeOverflow {
+            size: original_size_u64,
+        })?;
+    Ok((original_size, (header >> FLAG_SHIFT) as u8))
+}
+
 /// Reads the decompressed size from the first 8 bytes of a compressed stream.
 ///
 /// Returns `None` if `src` is shorter than 8 bytes.
@@ -119,7 +136,7 @@ pub fn decompressed_size(src: &[u8]) -> Option<u64> {
     if src.len() < HEADER_SIZE {
         return None;
     }
-    Some(u64::from_le_bytes(src[..8].try_into().unwrap()))
+    Some(u64::from_le_bytes(src[..8].try_into().unwrap()) & SIZE_MASK)
 }
 
 /// Decompresses a misa77-compressed stream into a new `Vec<u8>`.
@@ -128,13 +145,7 @@ pub fn decompressed_size(src: &[u8]) -> Option<u64> {
 /// encoded in the stream header.
 #[cfg(feature = "alloc")]
 pub fn decompress(src: &[u8], expected_len: usize) -> Result<alloc::vec::Vec<u8>, Error> {
-    let actual_len_u64 = src
-        .get(..HEADER_SIZE)
-        .ok_or(Error::InputTooShort)
-        .map(|header| u64::from_le_bytes(header.try_into().unwrap()))?;
-    let actual_len = actual_len_u64.try_into().map_err(|_| Error::SizeOverflow {
-        size: actual_len_u64,
-    })?;
+    let (actual_len, _) = header_fields(src)?;
     if actual_len != expected_len {
         return Err(Error::SizeMismatch {
             expected: expected_len,
@@ -151,16 +162,7 @@ pub fn decompress(src: &[u8], expected_len: usize) -> Result<alloc::vec::Vec<u8>
 ///
 /// Returns the number of bytes written to `dst`.
 pub fn decompress_into(src: &[u8], dst: &mut [u8]) -> Result<usize, Error> {
-    if src.len() < HEADER_SIZE {
-        return Err(Error::InputTooShort);
-    }
-
-    let original_size_u64 = u64::from_le_bytes(src[..8].try_into().unwrap());
-    let original_size: usize = original_size_u64
-        .try_into()
-        .map_err(|_| Error::SizeOverflow {
-            size: original_size_u64,
-        })?;
+    let (original_size, flags) = header_fields(src)?;
 
     if original_size == 0 {
         return Ok(0);
@@ -171,6 +173,10 @@ pub fn decompress_into(src: &[u8], dst: &mut [u8]) -> Result<usize, Error> {
             need: original_size,
             have: dst.len(),
         });
+    }
+
+    if flags & FLAG_HEAVY != 0 {
+        return decompress_into_heavy(src, dst, original_size);
     }
 
     if original_size <= SMALL_LIM {
@@ -224,6 +230,152 @@ pub fn decompress_into(src: &[u8], dst: &mut [u8]) -> Result<usize, Error> {
         suffix_start_in_src,
         token_output_end,
     )
+}
+
+fn decompress_into_heavy(src: &[u8], dst: &mut [u8], original_size: usize) -> Result<usize, Error> {
+    if original_size <= HEAVY_SMALL_LIM {
+        let raw_end = HEADER_SIZE
+            .checked_add(original_size)
+            .ok_or(Error::CorruptInput)?;
+        let payload = src.get(HEADER_SIZE..raw_end).ok_or(Error::InputTooShort)?;
+        dst[..original_size].copy_from_slice(payload);
+        return Ok(original_size);
+    }
+
+    if src.len() < EXT_HEADER_SIZE {
+        return Err(Error::InputTooShort);
+    }
+
+    let suffix_cnt_u64 = u64::from_le_bytes(src[8..16].try_into().unwrap());
+    let literal_suffix_cnt: usize = suffix_cnt_u64.try_into().map_err(|_| Error::SizeOverflow {
+        size: suffix_cnt_u64,
+    })?;
+
+    if literal_suffix_cnt < HEAVY_LITERAL_SUFFIX || literal_suffix_cnt > original_size {
+        return corrupt_input();
+    }
+    let Some(non_suffix_len) = src.len().checked_sub(literal_suffix_cnt) else {
+        return corrupt_input();
+    };
+    if non_suffix_len < EXT_HEADER_SIZE {
+        return corrupt_input();
+    }
+
+    let token_output_end = original_size - literal_suffix_cnt;
+    decompress_heavy_loop(
+        src,
+        dst,
+        original_size,
+        literal_suffix_cnt,
+        non_suffix_len,
+        token_output_end,
+    )
+}
+
+fn decompress_heavy_loop(
+    src: &[u8],
+    dst: &mut [u8],
+    original_size: usize,
+    literal_suffix_cnt: usize,
+    suffix_start_in_src: usize,
+    token_output_end: usize,
+) -> Result<usize, Error> {
+    let mut control = EXT_HEADER_SIZE;
+    let mut literals = suffix_start_in_src;
+    let mut out = 0usize;
+
+    while control < literals {
+        if control.checked_add(4).is_none_or(|end| end > literals) {
+            return corrupt_input();
+        }
+        let token = paranoid_unsafe_call!(primitives::read_u32_le(src, control));
+        control += 4;
+
+        let mut lit_len = (token >> 26) as usize;
+        let match_code = ((token >> 20) & 0x3F) as usize;
+        if match_code == 0 {
+            return corrupt_input();
+        }
+        let match_len = HEAVY_LEN_OF[match_code] as usize;
+        let dis = (token & HEAVY_DIS_MASK) as usize + HEAVY_MIN_DISTANCE;
+
+        if lit_len == HEAVY_TOKEN_LIT_MAX {
+            loop {
+                if control >= literals {
+                    return corrupt_input();
+                }
+                let extra = paranoid_unsafe_call!(primitives::read_byte(src, control)) as usize;
+                control += 1;
+                lit_len = lit_len.checked_add(extra).ok_or(Error::CorruptInput)?;
+                if extra < 255 {
+                    break;
+                }
+            }
+        }
+
+        if lit_len > literals - control {
+            return corrupt_input();
+        }
+        literals -= lit_len;
+
+        let after_literals = out.checked_add(lit_len).ok_or(Error::CorruptInput)?;
+        let token_end = after_literals
+            .checked_add(match_len)
+            .ok_or(Error::CorruptInput)?;
+        if token_end > token_output_end {
+            return corrupt_input();
+        }
+
+        paranoid_unsafe_call!(primitives::copy_from_src(src, literals, dst, out, lit_len));
+        out = after_literals;
+
+        if dis > out {
+            return corrupt_input();
+        }
+        copy_heavy_match(dst, out - dis, out, match_len)?;
+        out = token_end;
+    }
+
+    if out != token_output_end {
+        return corrupt_input();
+    }
+    paranoid_unsafe_call!(primitives::copy_from_src(
+        src,
+        suffix_start_in_src,
+        dst,
+        out,
+        literal_suffix_cnt,
+    ));
+    Ok(original_size)
+}
+
+#[inline(always)]
+fn copy_heavy_match(
+    dst: &mut [u8],
+    match_src: usize,
+    out: usize,
+    match_len: usize,
+) -> Result<(), Error> {
+    let rounded = match_len
+        .checked_add(VECTOR_WIDTH - 1)
+        .map(|n| n & !(VECTOR_WIDTH - 1))
+        .ok_or(Error::CorruptInput)?;
+    let end = out.checked_add(rounded).ok_or(Error::CorruptInput)?;
+    if end > dst.len() {
+        return Err(Error::CorruptInput);
+    }
+
+    let mut copied = 0usize;
+    while copied < match_len {
+        paranoid_unsafe_call!(primitives::wild_copy_match_32(
+            dst,
+            match_src + copied,
+            out + copied,
+            VECTOR_WIDTH,
+        ));
+        copied += VECTOR_WIDTH;
+    }
+    Ok(())
 }
 
 #[cfg(not(feature = "paranoid"))]
@@ -854,5 +1006,69 @@ mod kani_proofs {
         let result =
             guarded_step_default(&src, &mut dst, &mut control, &mut literals, &mut out, 68);
         assert!(result.is_err());
+    }
+
+    #[kani::proof]
+    fn heavy_header_masks_flags() {
+        let size: u64 = kani::any();
+        let flags: u8 = kani::any();
+        kani::assume(size <= SIZE_MASK);
+
+        let header = size | ((flags as u64) << FLAG_SHIFT);
+        assert_eq!(header & SIZE_MASK, size);
+        assert_eq!((header >> FLAG_SHIFT) as u8, flags);
+    }
+
+    #[kani::proof]
+    fn heavy_token_fields_are_bounded() {
+        let token: u32 = kani::any();
+
+        let lit_len = (token >> 26) as usize;
+        let match_code = ((token >> 20) & 0x3F) as usize;
+        let dis = (token & HEAVY_DIS_MASK) as usize + HEAVY_MIN_DISTANCE;
+
+        assert!(lit_len <= HEAVY_TOKEN_LIT_MAX);
+        assert!(match_code < HEAVY_LEN_OF.len());
+        assert!(dis >= HEAVY_MIN_DISTANCE);
+        assert!(dis <= HEAVY_MAX_DISTANCE);
+    }
+
+    #[kani::proof]
+    #[cfg(not(feature = "paranoid"))]
+    fn heavy_match_copy_geometry_is_in_bounds() {
+        let token_output_end: usize = kani::any();
+        kani::assume(token_output_end <= usize::MAX - HEAVY_LITERAL_SUFFIX);
+        let original_size = token_output_end + HEAVY_LITERAL_SUFFIX;
+
+        let out: usize = kani::any();
+        let match_len: usize = kani::any();
+        let dis: usize = kani::any();
+
+        kani::assume(match_len >= MIN_MATCH_LEN);
+        kani::assume(match_len <= HEAVY_MAX_MATCH_LEN);
+        kani::assume(dis >= HEAVY_MIN_DISTANCE);
+        kani::assume(dis <= HEAVY_MAX_DISTANCE);
+        kani::assume(out >= dis);
+        let token_end = out.checked_add(match_len);
+        kani::assume(token_end.is_some());
+        kani::assume(token_end.unwrap() <= token_output_end);
+
+        let rounded = (match_len + (VECTOR_WIDTH - 1)) & !(VECTOR_WIDTH - 1);
+        assert!(rounded >= VECTOR_WIDTH);
+        assert!(rounded <= match_len + (VECTOR_WIDTH - 1));
+        let copy_end = out.checked_add(rounded);
+        assert!(copy_end.is_some());
+        assert!(copy_end.unwrap() <= original_size);
+
+        let match_src = out - dis;
+        let copied: usize = kani::any();
+        kani::assume(copied <= rounded - VECTOR_WIDTH);
+
+        let src_pos = match_src.checked_add(copied);
+        let dst_pos = out.checked_add(copied);
+        assert!(src_pos.is_some());
+        assert!(dst_pos.is_some());
+        assert!(src_pos.unwrap().checked_add(VECTOR_WIDTH).unwrap() <= dst_pos.unwrap());
+        assert!(dst_pos.unwrap().checked_add(VECTOR_WIDTH).unwrap() <= original_size);
     }
 }

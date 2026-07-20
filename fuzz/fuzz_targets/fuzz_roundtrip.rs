@@ -7,4 +7,9 @@ fuzz_target!(|data: &[u8]| {
         let decompressed = m77rip::decompress(&compressed, data.len()).unwrap();
         assert_eq!(&decompressed, data);
     }
+    if data.len() <= 4096 {
+        let compressed = m77rip::compress_level(data, 2).unwrap();
+        let decompressed = m77rip::decompress(&compressed, data.len()).unwrap();
+        assert_eq!(&decompressed, data);
+    }
 });
