@@ -4,8 +4,8 @@
 
 extern "C" {
 
-uint64_t misa77_compress_bound(uint64_t src_size) {
-    return misa77::compress_bound(src_size);
+uint64_t misa77_compress_bound(uint64_t src_size, uint8_t level) {
+    return misa77::compress_bound(src_size, misa77::config(level));
 }
 
 uint64_t misa77_compress(const uint8_t* src,

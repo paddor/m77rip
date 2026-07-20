@@ -8,6 +8,7 @@ use std::process::Command;
 // SAFETY: These declarations match the C wrapper ABI. Calls validate pointer
 // lifetimes and capacities at each call site below.
 unsafe extern "C" {
+    fn misa77_compress_bound(src_size: u64, level: u8) -> u64;
     fn misa77_compress(src: *const u8, src_size: u64, dst: *mut u8, dst_cap: u64, level: u8)
     -> u64;
 }
@@ -72,8 +73,8 @@ fn main() {
         .unwrap_or("corpus/silesia/dickens");
     let iters: u64 = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(2000);
     let level: i8 = args.get(4).and_then(|s| s.parse().ok()).unwrap_or(1);
-    if codec == "cpp" && !(0..=1).contains(&level) {
-        panic!("C++ misa77 supports only levels 0 and 1");
+    if codec == "cpp" && !(0..=2).contains(&level) {
+        panic!("C++ misa77 supports only levels 0 through 2");
     }
 
     let data = std::fs::read(file).unwrap_or_else(|e| panic!("{file}: {e}"));
@@ -83,7 +84,12 @@ fn main() {
         data.len(),
     );
 
-    let bound = m77rip::compress_bound(data.len());
+    let bound = if codec == "cpp" {
+        // SAFETY: C function has no pointer arguments and accepts any u64 size.
+        (unsafe { misa77_compress_bound(data.len() as u64, level as u8) }) as usize
+    } else {
+        m77rip::compress_bound(data.len())
+    };
     let mut comp_buf = vec![0u8; bound];
 
     // Warmup

@@ -2,6 +2,7 @@
 
 extern crate libc;
 
+use std::collections::HashSet;
 use std::io::Write;
 use std::path::PathBuf;
 use std::process::Command;
@@ -9,7 +10,7 @@ use std::process::Command;
 // SAFETY: These declarations match the C wrapper ABI. Calls validate pointer
 // lifetimes and capacities at each call site below.
 unsafe extern "C" {
-    fn misa77_compress_bound(src_size: u64) -> u64;
+    fn misa77_compress_bound(src_size: u64, level: u8) -> u64;
     fn misa77_compress(src: *const u8, src_size: u64, dst: *mut u8, dst_cap: u64, level: u8)
     -> u64;
     fn misa77_decompress(src: *const u8, src_size: u64, dst: *mut u8, dst_cap: u64) -> u64;
@@ -103,7 +104,7 @@ fn bench_loop<F: FnMut()>(warmup: usize, target_ns: u64, rounds: usize, mut f: F
 
 fn c_misa77_compress(data: &[u8], level: u8) -> Vec<u8> {
     // SAFETY: C function has no pointer arguments and accepts any u64 size.
-    let bound = unsafe { misa77_compress_bound(data.len() as u64) } as usize;
+    let bound = unsafe { misa77_compress_bound(data.len() as u64, level) } as usize;
     let mut out = vec![0u8; bound];
     // SAFETY: Pointers come from live borrowed slices. `out` has the bound
     // capacity passed to the C compressor.
@@ -147,7 +148,7 @@ fn bench_c_misa77(data: &[u8], name: &str, target_ns: u64, level: u8) -> BenchRe
 
     let compress_ns = {
         // SAFETY: C function has no pointer arguments and accepts any u64 size.
-        let bound = unsafe { misa77_compress_bound(data.len() as u64) } as usize;
+        let bound = unsafe { misa77_compress_bound(data.len() as u64, level) } as usize;
         let mut comp_buf = vec![0u8; bound];
         // SAFETY: Pointers reference live benchmark buffers with matching
         // lengths and capacities.
@@ -312,11 +313,24 @@ fn load_cache(codecs: &[&str]) -> Vec<BenchResult> {
 
 fn save_cache(results: &[BenchResult], codecs: &[&str]) {
     for codec in codecs {
-        let entries: Vec<_> = results.iter().filter(|r| r.codec == *codec).collect();
-        if entries.is_empty() {
+        let new_entries: Vec<_> = results.iter().filter(|r| r.codec == *codec).collect();
+        if new_entries.is_empty() {
             continue;
         }
         let path = codec_cache_path(codec);
+        let mut entries = match std::fs::read_to_string(&path) {
+            Ok(content) => content
+                .lines()
+                .filter_map(BenchResult::from_json)
+                .collect::<Vec<_>>(),
+            Err(_) => Vec::new(),
+        };
+        let replaced_inputs = new_entries
+            .iter()
+            .map(|r| r.input_name.as_str())
+            .collect::<HashSet<_>>();
+        entries.retain(|r| !replaced_inputs.contains(r.input_name.as_str()));
+        entries.extend(new_entries.into_iter().cloned());
         let mut f = std::fs::File::create(&path).unwrap();
         for r in &entries {
             writeln!(f, "{}", r.to_json()).unwrap();
@@ -401,6 +415,48 @@ fn ensure_corpus() {
     }
 }
 
+fn parse_size_arg(value: &str) -> Option<usize> {
+    let (number, multiplier) = match value
+        .strip_suffix("KiB")
+        .or_else(|| value.strip_suffix("kib"))
+    {
+        Some(number) => (number, 1024usize),
+        None => match value
+            .strip_suffix("MiB")
+            .or_else(|| value.strip_suffix("mib"))
+        {
+            Some(number) => (number, 1024usize * 1024),
+            None => match value
+                .strip_suffix("GiB")
+                .or_else(|| value.strip_suffix("gib"))
+            {
+                Some(number) => (number, 1024usize * 1024 * 1024),
+                None => match value.strip_suffix('K').or_else(|| value.strip_suffix('k')) {
+                    Some(number) => (number, 1000usize),
+                    None => match value.strip_suffix('M').or_else(|| value.strip_suffix('m')) {
+                        Some(number) => (number, 1000usize * 1000),
+                        None => match value.strip_suffix('G').or_else(|| value.strip_suffix('g')) {
+                            Some(number) => (number, 1000usize * 1000 * 1000),
+                            None => (value, 1usize),
+                        },
+                    },
+                },
+            },
+        },
+    };
+    number.parse::<usize>().ok()?.checked_mul(multiplier)
+}
+
+fn size_label(bytes: usize) -> String {
+    if bytes.is_multiple_of(1024 * 1024) {
+        format!("{}MiB", bytes / 1024 / 1024)
+    } else if bytes.is_multiple_of(1024) {
+        format!("{}KiB", bytes / 1024)
+    } else {
+        bytes.to_string()
+    }
+}
+
 const ALL_FILES: &[&str] = &[
     "corpus/silesia/dickens",
     "corpus/silesia/mozilla",
@@ -445,6 +501,7 @@ const M77RIP_DECODE_1: &str = "m77rip paranoid (from -1)";
 const CODECS: &[&str] = &[
     "C++ misa77 -0",
     "C++ misa77 -1",
+    "C++ misa77 -2",
     "C++ misa77 safe -0",
     M77RIP_COMPRESS_SPEED,
     M77RIP_COMPRESS_0,
@@ -460,9 +517,14 @@ fn main() {
     let args: Vec<String> = std::env::args().collect();
     let mut only: Vec<String> = Vec::new();
     let mut file_filter: Vec<String> = Vec::new();
+    let mut max_bytes: Option<usize> = None;
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
+            "--help" | "-h" => {
+                println!("usage: m77rip_bench [--impl TEXT] [--files a,b] [--max-bytes N|1MiB|1M]");
+                return;
+            }
             "--impl" => {
                 i += 1;
                 if i < args.len() {
@@ -475,6 +537,15 @@ fn main() {
                     file_filter.extend(args[i].split(',').map(|s| s.to_string()));
                 }
             }
+            "--max-bytes" => {
+                i += 1;
+                if i < args.len() {
+                    max_bytes = Some(
+                        parse_size_arg(&args[i])
+                            .unwrap_or_else(|| panic!("invalid --max-bytes value: {}", args[i])),
+                    );
+                }
+            }
             _ => {}
         }
         i += 1;
@@ -485,17 +556,24 @@ fn main() {
     let mut results: Vec<BenchResult> = Vec::new();
 
     for path in ALL_FILES {
-        let name = path.rsplit('/').next().unwrap();
-        if !file_filter.is_empty() && !file_filter.iter().any(|f| f == name) {
+        let base_name = path.rsplit('/').next().unwrap();
+        if !file_filter.is_empty() && !file_filter.iter().any(|f| f == base_name) {
             continue;
         }
 
-        let data = match std::fs::read(path) {
+        let mut data = match std::fs::read(path) {
             Ok(d) => d,
             Err(_) => {
                 eprintln!("skipping {path}: not found");
                 continue;
             }
+        };
+        if let Some(max_bytes) = max_bytes {
+            data.truncate(max_bytes.min(data.len()));
+        }
+        let name = match max_bytes {
+            Some(max_bytes) => format!("{base_name}@{}", size_label(max_bytes)),
+            None => base_name.to_string(),
         };
 
         for &codec in CODECS {
@@ -513,36 +591,37 @@ fn main() {
 
             eprintln!("  {codec} x {name}: benchmarking...");
             let r = match codec {
-                "C++ misa77 -0" => bench_c_misa77(&data, name, target_ns, 0),
-                "C++ misa77 -1" => bench_c_misa77(&data, name, target_ns, 1),
-                "C++ misa77 safe -0" => bench_c_misa77_safe(&data, name, target_ns, 0),
+                "C++ misa77 -0" => bench_c_misa77(&data, &name, target_ns, 0),
+                "C++ misa77 -1" => bench_c_misa77(&data, &name, target_ns, 1),
+                "C++ misa77 -2" => bench_c_misa77(&data, &name, target_ns, 2),
+                "C++ misa77 safe -0" => bench_c_misa77_safe(&data, &name, target_ns, 0),
                 M77RIP_COMPRESS_SPEED => {
-                    let mut r = bench_m77rip_compress(&data, name, target_ns, -1);
+                    let mut r = bench_m77rip_compress(&data, &name, target_ns, -1);
                     r.codec = M77RIP_COMPRESS_SPEED.to_string();
                     r
                 }
                 M77RIP_COMPRESS_0 => {
-                    let mut r = bench_m77rip_compress(&data, name, target_ns, 0);
+                    let mut r = bench_m77rip_compress(&data, &name, target_ns, 0);
                     r.codec = M77RIP_COMPRESS_0.to_string();
                     r
                 }
                 M77RIP_COMPRESS_1 => {
-                    let mut r = bench_m77rip_compress(&data, name, target_ns, 1);
+                    let mut r = bench_m77rip_compress(&data, &name, target_ns, 1);
                     r.codec = M77RIP_COMPRESS_1.to_string();
                     r
                 }
                 M77RIP_DECODE_SPEED => {
-                    let mut r = bench_m77rip(&data, name, target_ns, -1);
+                    let mut r = bench_m77rip(&data, &name, target_ns, -1);
                     r.codec = M77RIP_DECODE_SPEED.to_string();
                     r
                 }
                 M77RIP_DECODE_0 => {
-                    let mut r = bench_m77rip(&data, name, target_ns, 0);
+                    let mut r = bench_m77rip(&data, &name, target_ns, 0);
                     r.codec = M77RIP_DECODE_0.to_string();
                     r
                 }
                 M77RIP_DECODE_1 => {
-                    let mut r = bench_m77rip(&data, name, target_ns, 1);
+                    let mut r = bench_m77rip(&data, &name, target_ns, 1);
                     r.codec = M77RIP_DECODE_1.to_string();
                     r
                 }
@@ -558,10 +637,19 @@ fn main() {
     println!();
     println!("=== Decompression ===");
     println!(
-        "{:<12} {:>10} {:>10} {:>8} {:>10} {:>8} {:>10} {:>10} {:>8}",
-        "input", "C++ -0", "m77 L-1", "ratio", "m77 -0", "ratio", "C++ -1", "m77 -1", "ratio"
+        "{:<12} {:>10} {:>10} {:>8} {:>10} {:>8} {:>10} {:>10} {:>8} {:>10}",
+        "input",
+        "C++ -0",
+        "m77 L-1",
+        "ratio",
+        "m77 -0",
+        "ratio",
+        "C++ -1",
+        "m77 -1",
+        "ratio",
+        "C++ -2"
     );
-    println!("{}", "-".repeat(100));
+    println!("{}", "-".repeat(111));
 
     let fmt_mbps_decomp = |r: Option<&BenchResult>| -> String {
         match r {
@@ -604,10 +692,14 @@ fn main() {
     };
 
     for path in ALL_FILES {
-        let name = path.rsplit('/').next().unwrap();
-        if !file_filter.is_empty() && !file_filter.iter().any(|f| f == name) {
+        let base_name = path.rsplit('/').next().unwrap();
+        if !file_filter.is_empty() && !file_filter.iter().any(|f| f == base_name) {
             continue;
         }
+        let name = match max_bytes {
+            Some(max_bytes) => format!("{base_name}@{}", size_label(max_bytes)),
+            None => base_name.to_string(),
+        };
 
         let find = |codec: &str| -> Option<&BenchResult> {
             results
@@ -616,7 +708,7 @@ fn main() {
         };
 
         println!(
-            "{:<12} {:>10} {:>10} {:>8} {:>10} {:>8} {:>10} {:>10} {:>8}",
+            "{:<12} {:>10} {:>10} {:>8} {:>10} {:>8} {:>10} {:>10} {:>8} {:>10}",
             name,
             fmt_mbps_decomp(find("C++ misa77 -0")),
             fmt_mbps_decomp(find(M77RIP_DECODE_SPEED)),
@@ -626,6 +718,7 @@ fn main() {
             fmt_mbps_decomp(find("C++ misa77 -1")),
             fmt_mbps_decomp(find(M77RIP_DECODE_1)),
             fmt_ratio_decomp(find("C++ misa77 -1"), find(M77RIP_DECODE_1)),
+            fmt_mbps_decomp(find("C++ misa77 -2")),
         );
     }
 
@@ -633,16 +726,29 @@ fn main() {
     println!();
     println!("=== Compression ===");
     println!(
-        "{:<12} {:>10} {:>10} {:>8} {:>10} {:>8} {:>10} {:>10} {:>8}",
-        "input", "C++ -0", "m77 L-1", "ratio", "m77 -0", "ratio", "C++ -1", "m77 -1", "ratio"
+        "{:<12} {:>10} {:>10} {:>8} {:>10} {:>8} {:>10} {:>10} {:>8} {:>10}",
+        "input",
+        "C++ -0",
+        "m77 L-1",
+        "ratio",
+        "m77 -0",
+        "ratio",
+        "C++ -1",
+        "m77 -1",
+        "ratio",
+        "C++ -2"
     );
-    println!("{}", "-".repeat(100));
+    println!("{}", "-".repeat(111));
 
     for path in ALL_FILES {
-        let name = path.rsplit('/').next().unwrap();
-        if !file_filter.is_empty() && !file_filter.iter().any(|f| f == name) {
+        let base_name = path.rsplit('/').next().unwrap();
+        if !file_filter.is_empty() && !file_filter.iter().any(|f| f == base_name) {
             continue;
         }
+        let name = match max_bytes {
+            Some(max_bytes) => format!("{base_name}@{}", size_label(max_bytes)),
+            None => base_name.to_string(),
+        };
 
         let find = |codec: &str| -> Option<&BenchResult> {
             results
@@ -651,7 +757,7 @@ fn main() {
         };
 
         println!(
-            "{:<12} {:>10} {:>10} {:>8} {:>10} {:>8} {:>10} {:>10} {:>8}",
+            "{:<12} {:>10} {:>10} {:>8} {:>10} {:>8} {:>10} {:>10} {:>8} {:>10}",
             name,
             fmt_mbps_comp(find("C++ misa77 -0")),
             fmt_mbps_comp(find(M77RIP_COMPRESS_SPEED)),
@@ -661,6 +767,7 @@ fn main() {
             fmt_mbps_comp(find("C++ misa77 -1")),
             fmt_mbps_comp(find(M77RIP_COMPRESS_1)),
             fmt_ratio_comp(find("C++ misa77 -1"), find(M77RIP_COMPRESS_1)),
+            fmt_mbps_comp(find("C++ misa77 -2")),
         );
     }
 }
