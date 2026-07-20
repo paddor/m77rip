@@ -8,9 +8,13 @@ use fearless_simd::{Simd, prelude::*, u8x32};
 
 const HASH_SIZE: usize = 1 << 16;
 const HASH_MUL: u32 = 2654435761;
-const BATCH: usize = 8;
+const BATCH: usize = 176;
+const INSERTS_PER_BATCH: usize = 8;
 const CHAIN_AFTER: usize = 8;
 const SKIP_SHIFT: usize = 6;
+
+const _: () = assert!(INSERTS_PER_BATCH == 8);
+const _: () = assert!(INSERTS_PER_BATCH <= BATCH);
 
 #[inline(always)]
 fn hash4(val: u32) -> usize {
@@ -321,7 +325,7 @@ fn batch_insert_latest(
         ht.insert(hsh, insert_pos);
 
         if !sparse {
-            for i in 1..BATCH {
+            for i in 1..INSERTS_PER_BATCH {
                 let insert_pos = *hpos + i;
                 let hsh = hash4(read_u32_le(src, insert_pos));
                 ht.insert(hsh, insert_pos);
