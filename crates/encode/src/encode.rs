@@ -233,13 +233,13 @@ impl HashTable {
 }
 
 struct LatestHashTable {
-    entries: Vec<u16>,
+    entries: [u16; HASH_SIZE],
 }
 
 impl LatestHashTable {
     fn new() -> Self {
         Self {
-            entries: vec![0u16; HASH_SIZE],
+            entries: [0u16; HASH_SIZE],
         }
     }
 
@@ -507,6 +507,17 @@ fn emit_token(
     dst[*drpos..*drpos + lit_len].copy_from_slice(&src[lit..lit + lit_len]);
 }
 
+#[inline(always)]
+fn emit_match_token(dst: &mut [u8], dlpos: &mut usize, match_len: usize, dis: usize) {
+    let norm_match = match_len - (MIN_MATCH_LEN - 1);
+    dst[*dlpos] = norm_match as u8;
+    *dlpos += 1;
+
+    let dbytes = (dis - MIN_DISTANCE) as u16;
+    dst[*dlpos..*dlpos + 2].copy_from_slice(&dbytes.to_le_bytes());
+    *dlpos += 2;
+}
+
 #[cfg(not(feature = "paranoid"))]
 #[inline(always)]
 fn default_compress<S: Simd>(simd: S, src: &[u8], dst: &mut [u8]) -> usize {
@@ -707,9 +718,7 @@ fn loose_compress(src: &[u8], dst: &mut [u8]) -> usize {
 #[inline(always)]
 fn loose_compress_impl<S: Simd>(simd: S, src: &[u8], dst: &mut [u8]) -> usize {
     const ACCEPT_LEN: usize = 7;
-    const FIRE_AT: usize = 6;
-    const REGIME_CAP: i64 = 64;
-    const REGIME_THRESHOLD: i64 = 32;
+    const FIRE_AT: usize = 4;
     const SPARSE_INSERT_AT: usize = 8;
 
     let src_size = src.len();
@@ -738,7 +747,6 @@ fn loose_compress_impl<S: Simd>(simd: S, src: &[u8], dst: &mut [u8]) -> usize {
     let mut cand_pos: usize = 0;
     let mut cand_len: usize = 0;
     let mut cand_lst: usize = 0;
-    let mut regime: i64 = 0;
 
     while pos + MAX_MATCH_LEN <= match_end_limit {
         batch_insert_latest(src, &mut ht, &mut hpos, pos, miss_run >= SPARSE_INSERT_AT);
@@ -750,17 +758,11 @@ fn loose_compress_impl<S: Simd>(simd: S, src: &[u8], dst: &mut [u8]) -> usize {
         };
 
         let pos_safe_bound = pos;
+        let pend = pos - lit;
         let mut accept = match_len >= ACCEPT_LEN;
 
-        let pend = pos - lit;
-        let fire = if regime >= REGIME_THRESHOLD {
-            pend >= FIRE_AT
-        } else {
-            pend == FIRE_AT
-        };
-
         if !accept {
-            if fire {
+            if pend == FIRE_AT {
                 if cand_len != 0
                     && (match_len < MIN_MATCH_LEN || cand_pos + cand_len >= pos + match_len)
                 {
@@ -800,9 +802,6 @@ fn loose_compress_impl<S: Simd>(simd: S, src: &[u8], dst: &mut [u8]) -> usize {
             dst, &mut dlpos, &mut drpos, src, lit, lit_len, match_len, dis,
         );
 
-        regime += if (7..=32).contains(&lit_len) { 2 } else { -1 };
-        regime = regime.clamp(0, REGIME_CAP);
-
         pos += match_len;
         lit = pos;
         pos = pos.max(pos_safe_bound);
@@ -825,18 +824,8 @@ fn loose_compress_impl<S: Simd>(simd: S, src: &[u8], dst: &mut [u8]) -> usize {
             }
 
             let dis = pos - chain_lst;
-            emit_token(
-                dst,
-                &mut dlpos,
-                &mut drpos,
-                src,
-                pos,
-                0,
-                chain_match_len,
-                dis,
-            );
+            emit_match_token(dst, &mut dlpos, chain_match_len, dis);
 
-            regime = (regime - 1).clamp(0, REGIME_CAP);
             pos += chain_match_len;
             lit = pos;
         }
@@ -861,9 +850,7 @@ fn loose_compress_impl<S: Simd>(simd: S, src: &[u8], dst: &mut [u8]) -> usize {
 #[inline(always)]
 fn loose_compress_impl(src: &[u8], dst: &mut [u8]) -> usize {
     const ACCEPT_LEN: usize = 7;
-    const FIRE_AT: usize = 6;
-    const REGIME_CAP: i64 = 64;
-    const REGIME_THRESHOLD: i64 = 32;
+    const FIRE_AT: usize = 4;
     const SPARSE_INSERT_AT: usize = 8;
 
     let src_size = src.len();
@@ -892,7 +879,6 @@ fn loose_compress_impl(src: &[u8], dst: &mut [u8]) -> usize {
     let mut cand_pos: usize = 0;
     let mut cand_len: usize = 0;
     let mut cand_lst: usize = 0;
-    let mut regime: i64 = 0;
 
     while pos + MAX_MATCH_LEN <= match_end_limit {
         batch_insert_latest(src, &mut ht, &mut hpos, pos, miss_run >= SPARSE_INSERT_AT);
@@ -904,17 +890,11 @@ fn loose_compress_impl(src: &[u8], dst: &mut [u8]) -> usize {
         };
 
         let pos_safe_bound = pos;
+        let pend = pos - lit;
         let mut accept = match_len >= ACCEPT_LEN;
 
-        let pend = pos - lit;
-        let fire = if regime >= REGIME_THRESHOLD {
-            pend >= FIRE_AT
-        } else {
-            pend == FIRE_AT
-        };
-
         if !accept {
-            if fire {
+            if pend == FIRE_AT {
                 if cand_len != 0
                     && (match_len < MIN_MATCH_LEN || cand_pos + cand_len >= pos + match_len)
                 {
@@ -954,9 +934,6 @@ fn loose_compress_impl(src: &[u8], dst: &mut [u8]) -> usize {
             dst, &mut dlpos, &mut drpos, src, lit, lit_len, match_len, dis,
         );
 
-        regime += if (7..=32).contains(&lit_len) { 2 } else { -1 };
-        regime = regime.clamp(0, REGIME_CAP);
-
         pos += match_len;
         lit = pos;
         pos = pos.max(pos_safe_bound);
@@ -979,18 +956,8 @@ fn loose_compress_impl(src: &[u8], dst: &mut [u8]) -> usize {
             }
 
             let dis = pos - chain_lst;
-            emit_token(
-                dst,
-                &mut dlpos,
-                &mut drpos,
-                src,
-                pos,
-                0,
-                chain_match_len,
-                dis,
-            );
+            emit_match_token(dst, &mut dlpos, chain_match_len, dis);
 
-            regime = (regime - 1).clamp(0, REGIME_CAP);
             pos += chain_match_len;
             lit = pos;
         }
