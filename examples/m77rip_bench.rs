@@ -183,14 +183,24 @@ fn bench_c_misa77(data: &[u8], name: &str, target_ns: u64, level: u8) -> BenchRe
     }
 }
 
-fn bench_m77rip_compress(data: &[u8], name: &str, target_ns: u64, level: u8) -> BenchResult {
+fn m77rip_level_label(level: i8) -> &'static str {
+    match level {
+        -1 => "L-1",
+        0 => "-0",
+        1 => "-1",
+        _ => unreachable!(),
+    }
+}
+
+fn bench_m77rip_compress(data: &[u8], name: &str, target_ns: u64, level: i8) -> BenchResult {
     let compressed = m77rip::compress_level(data, level).unwrap();
+    let label = m77rip_level_label(level);
 
     // Verify roundtrip
     let decompressed = m77rip::decompress(&compressed, data.len()).unwrap();
     assert_eq!(
         &decompressed, data,
-        "m77rip compress-{level} roundtrip mismatch on {name}"
+        "m77rip compress {label} roundtrip mismatch on {name}"
     );
 
     let mut comp_buf = vec![0u8; m77rip::compress_bound(data.len())];
@@ -203,7 +213,7 @@ fn bench_m77rip_compress(data: &[u8], name: &str, target_ns: u64, level: u8) -> 
     });
 
     BenchResult {
-        codec: format!("m77rip compress -{level}"),
+        codec: format!("m77rip compress {label}"),
         input_name: name.to_string(),
         input_size: data.len(),
         compressed_size: compressed.len(),
@@ -212,9 +222,14 @@ fn bench_m77rip_compress(data: &[u8], name: &str, target_ns: u64, level: u8) -> 
     }
 }
 
-fn bench_m77rip(data: &[u8], name: &str, target_ns: u64, level: u8) -> BenchResult {
-    // Use the C++ compressor for realistic compressed data
-    let compressed = c_misa77_compress(data, level);
+fn bench_m77rip(data: &[u8], name: &str, target_ns: u64, level: i8) -> BenchResult {
+    let compressed = if level < 0 {
+        m77rip::compress_level(data, level).unwrap()
+    } else {
+        // Use the C++ compressor when this level exists in the reference.
+        c_misa77_compress(data, level as u8)
+    };
+    let label = m77rip_level_label(level);
     let original_size = data.len();
     let mut decomp_buf = vec![0u8; original_size];
 
@@ -230,7 +245,7 @@ fn bench_m77rip(data: &[u8], name: &str, target_ns: u64, level: u8) -> BenchResu
     });
 
     BenchResult {
-        codec: format!("m77rip (from -{level})"),
+        codec: format!("m77rip (from {label})"),
         input_name: name.to_string(),
         input_size: data.len(),
         compressed_size: compressed.len(),
@@ -402,18 +417,26 @@ const ALL_FILES: &[&str] = &[
 ];
 
 #[cfg(not(feature = "paranoid"))]
+const M77RIP_COMPRESS_SPEED: &str = "m77rip compress L-1";
+#[cfg(not(feature = "paranoid"))]
 const M77RIP_COMPRESS_0: &str = "m77rip compress -0";
 #[cfg(not(feature = "paranoid"))]
 const M77RIP_COMPRESS_1: &str = "m77rip compress -1";
+#[cfg(not(feature = "paranoid"))]
+const M77RIP_DECODE_SPEED: &str = "m77rip (from L-1)";
 #[cfg(not(feature = "paranoid"))]
 const M77RIP_DECODE_0: &str = "m77rip (from -0)";
 #[cfg(not(feature = "paranoid"))]
 const M77RIP_DECODE_1: &str = "m77rip (from -1)";
 
 #[cfg(feature = "paranoid")]
+const M77RIP_COMPRESS_SPEED: &str = "m77rip paranoid compress L-1";
+#[cfg(feature = "paranoid")]
 const M77RIP_COMPRESS_0: &str = "m77rip paranoid compress -0";
 #[cfg(feature = "paranoid")]
 const M77RIP_COMPRESS_1: &str = "m77rip paranoid compress -1";
+#[cfg(feature = "paranoid")]
+const M77RIP_DECODE_SPEED: &str = "m77rip paranoid (from L-1)";
 #[cfg(feature = "paranoid")]
 const M77RIP_DECODE_0: &str = "m77rip paranoid (from -0)";
 #[cfg(feature = "paranoid")]
@@ -423,8 +446,10 @@ const CODECS: &[&str] = &[
     "C++ misa77 -0",
     "C++ misa77 -1",
     "C++ misa77 safe -0",
+    M77RIP_COMPRESS_SPEED,
     M77RIP_COMPRESS_0,
     M77RIP_COMPRESS_1,
+    M77RIP_DECODE_SPEED,
     M77RIP_DECODE_0,
     M77RIP_DECODE_1,
 ];
@@ -491,6 +516,11 @@ fn main() {
                 "C++ misa77 -0" => bench_c_misa77(&data, name, target_ns, 0),
                 "C++ misa77 -1" => bench_c_misa77(&data, name, target_ns, 1),
                 "C++ misa77 safe -0" => bench_c_misa77_safe(&data, name, target_ns, 0),
+                M77RIP_COMPRESS_SPEED => {
+                    let mut r = bench_m77rip_compress(&data, name, target_ns, -1);
+                    r.codec = M77RIP_COMPRESS_SPEED.to_string();
+                    r
+                }
                 M77RIP_COMPRESS_0 => {
                     let mut r = bench_m77rip_compress(&data, name, target_ns, 0);
                     r.codec = M77RIP_COMPRESS_0.to_string();
@@ -499,6 +529,11 @@ fn main() {
                 M77RIP_COMPRESS_1 => {
                     let mut r = bench_m77rip_compress(&data, name, target_ns, 1);
                     r.codec = M77RIP_COMPRESS_1.to_string();
+                    r
+                }
+                M77RIP_DECODE_SPEED => {
+                    let mut r = bench_m77rip(&data, name, target_ns, -1);
+                    r.codec = M77RIP_DECODE_SPEED.to_string();
                     r
                 }
                 M77RIP_DECODE_0 => {
@@ -523,10 +558,10 @@ fn main() {
     println!();
     println!("=== Decompression ===");
     println!(
-        "{:<12} {:>10} {:>10} {:>8} {:>10} {:>10} {:>8}",
-        "input", "C++ -0", "m77rip -0", "ratio", "C++ -1", "m77rip -1", "ratio"
+        "{:<12} {:>10} {:>10} {:>8} {:>10} {:>8} {:>10} {:>10} {:>8}",
+        "input", "C++ -0", "m77 L-1", "ratio", "m77 -0", "ratio", "C++ -1", "m77 -1", "ratio"
     );
-    println!("{}", "-".repeat(78));
+    println!("{}", "-".repeat(100));
 
     let fmt_mbps_decomp = |r: Option<&BenchResult>| -> String {
         match r {
@@ -581,9 +616,11 @@ fn main() {
         };
 
         println!(
-            "{:<12} {:>10} {:>10} {:>8} {:>10} {:>10} {:>8}",
+            "{:<12} {:>10} {:>10} {:>8} {:>10} {:>8} {:>10} {:>10} {:>8}",
             name,
             fmt_mbps_decomp(find("C++ misa77 -0")),
+            fmt_mbps_decomp(find(M77RIP_DECODE_SPEED)),
+            fmt_ratio_decomp(find("C++ misa77 -0"), find(M77RIP_DECODE_SPEED)),
             fmt_mbps_decomp(find(M77RIP_DECODE_0)),
             fmt_ratio_decomp(find("C++ misa77 -0"), find(M77RIP_DECODE_0)),
             fmt_mbps_decomp(find("C++ misa77 -1")),
@@ -596,10 +633,10 @@ fn main() {
     println!();
     println!("=== Compression ===");
     println!(
-        "{:<12} {:>10} {:>10} {:>8} {:>10} {:>10} {:>8}",
-        "input", "C++ -0", "m77rip -0", "ratio", "C++ -1", "m77rip -1", "ratio"
+        "{:<12} {:>10} {:>10} {:>8} {:>10} {:>8} {:>10} {:>10} {:>8}",
+        "input", "C++ -0", "m77 L-1", "ratio", "m77 -0", "ratio", "C++ -1", "m77 -1", "ratio"
     );
-    println!("{}", "-".repeat(78));
+    println!("{}", "-".repeat(100));
 
     for path in ALL_FILES {
         let name = path.rsplit('/').next().unwrap();
@@ -614,9 +651,11 @@ fn main() {
         };
 
         println!(
-            "{:<12} {:>10} {:>10} {:>8} {:>10} {:>10} {:>8}",
+            "{:<12} {:>10} {:>10} {:>8} {:>10} {:>8} {:>10} {:>10} {:>8}",
             name,
             fmt_mbps_comp(find("C++ misa77 -0")),
+            fmt_mbps_comp(find(M77RIP_COMPRESS_SPEED)),
+            fmt_ratio_comp(find("C++ misa77 -0"), find(M77RIP_COMPRESS_SPEED)),
             fmt_mbps_comp(find(M77RIP_COMPRESS_0)),
             fmt_ratio_comp(find("C++ misa77 -0"), find(M77RIP_COMPRESS_0)),
             fmt_mbps_comp(find("C++ misa77 -1")),

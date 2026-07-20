@@ -176,7 +176,7 @@ fn level0_dickens_chunks() {
     };
     for &n in &[65536, 100000, 500000, 1000000, 5000000, data.len()] {
         let chunk = &data[..n.min(data.len())];
-        for level in [0, 1] {
+        for level in [-1, 0, 1] {
             let compressed = m77rip::compress_level(chunk, level).unwrap();
             match m77rip::decompress(&compressed, chunk.len()) {
                 Ok(d) => assert_eq!(d, chunk, "level{level} mismatch at size {n}"),
@@ -217,7 +217,7 @@ fn cpp_decompresses_m77rip_output() {
     cases.push(repeated);
 
     for data in cases {
-        for level in [0, 1] {
+        for level in [-1, 0, 1] {
             let compressed = m77rip::compress_level(&data, level).unwrap();
             let mut out = vec![0u8; data.len()];
             // SAFETY: pointers come from live slices. `out` capacity matches

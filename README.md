@@ -107,7 +107,8 @@ instead of runtime cpuid. Compile with `-C target-cpu=native` or
 
 The encoder requires `std` and has only been tested on 64-bit targets.
 
-`compress_level` returns an error for levels other than `0` and `1`.
+`compress_level` accepts levels `-1`, `0`, and `1`. Level `-1` is fastest,
+level `0` is the C++-ratio middle ground, and level `1` favors ratio.
 
 ## License
 

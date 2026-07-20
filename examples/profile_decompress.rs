@@ -79,10 +79,17 @@ fn main() {
         .map(|s| s.as_str())
         .unwrap_or("corpus/silesia/dickens");
     let iters: u64 = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(50_000);
-    let level: u8 = args.get(4).and_then(|s| s.parse().ok()).unwrap_or(0);
+    let level: i8 = args.get(4).and_then(|s| s.parse().ok()).unwrap_or(0);
+    if codec == "cpp" && !(0..=1).contains(&level) {
+        panic!("C++ misa77 supports only levels 0 and 1");
+    }
 
     let data = std::fs::read(file).unwrap_or_else(|e| panic!("{file}: {e}"));
-    let compressed = c_compress(&data, level);
+    let compressed = if level < 0 {
+        m77rip::compress_level(&data, level).unwrap()
+    } else {
+        c_compress(&data, level as u8)
+    };
     let original_size = data.len();
 
     eprintln!(

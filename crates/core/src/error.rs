@@ -7,7 +7,7 @@ pub enum Error {
     CorruptInput,
     SizeOverflow { size: u64 },
     SizeMismatch { expected: usize, actual: usize },
-    InvalidLevel { level: u8 },
+    InvalidLevel { level: i8 },
 }
 
 impl fmt::Display for Error {

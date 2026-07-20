@@ -71,7 +71,10 @@ fn main() {
         .map(|s| s.as_str())
         .unwrap_or("corpus/silesia/dickens");
     let iters: u64 = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(2000);
-    let level: u8 = args.get(4).and_then(|s| s.parse().ok()).unwrap_or(1);
+    let level: i8 = args.get(4).and_then(|s| s.parse().ok()).unwrap_or(1);
+    if codec == "cpp" && !(0..=1).contains(&level) {
+        panic!("C++ misa77 supports only levels 0 and 1");
+    }
 
     let data = std::fs::read(file).unwrap_or_else(|e| panic!("{file}: {e}"));
 
@@ -97,7 +100,7 @@ fn main() {
                 c_compress_into(
                     std::hint::black_box(&data),
                     std::hint::black_box(&mut comp_buf),
-                    level,
+                    level as u8,
                 );
             }
             _ => panic!("unknown codec: {codec}"),
@@ -118,7 +121,7 @@ fn main() {
                 c_compress_into(
                     std::hint::black_box(&data),
                     std::hint::black_box(&mut comp_buf),
-                    level,
+                    level as u8,
                 );
             }
             _ => {}
