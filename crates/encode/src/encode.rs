@@ -1,6 +1,8 @@
 use m77rip_core::Error;
 use m77rip_core::format::*;
 
+#[cfg(all(not(feature = "paranoid"), target_arch = "x86_64"))]
+use core::arch::x86_64::{__m256i, _mm256_cmpeq_epi8, _mm256_loadu_si256, _mm256_movemask_epi8};
 #[cfg(not(feature = "paranoid"))]
 use core::ptr;
 #[cfg(not(feature = "paranoid"))]
@@ -19,7 +21,7 @@ const HEAVY_HASH_SIZE: usize = 1 << HEAVY_HASH_BITS;
 const HEAVY_RING_SIZE: usize = 1 << (HEAVY_WIN_BITS + 1);
 const HEAVY_RING_MASK: usize = HEAVY_RING_SIZE - 1;
 const HEAVY_NIL: u32 = u32::MAX;
-const HEAVY_MAX_CHAIN: usize = 2048;
+const HEAVY_MAX_CHAIN: usize = 192;
 const HEAVY_NICE_LEN: usize = HEAVY_MAX_MATCH_LEN;
 const HEAVY_ACCEPT_LEN: usize = 5;
 const HEAVY_LAZY_GAIN: usize = 1;
@@ -83,6 +85,14 @@ unsafe fn read_u32_le_unchecked(src: &[u8], pos: usize) -> u32 {
 
 #[cfg(not(feature = "paranoid"))]
 #[inline(always)]
+unsafe fn read_byte_unchecked(src: &[u8], pos: usize) -> u8 {
+    debug_assert!(pos < src.len());
+    // SAFETY: caller guarantees `pos` is inside `src`.
+    unsafe { *src.as_ptr().add(pos) }
+}
+
+#[cfg(not(feature = "paranoid"))]
+#[inline(always)]
 unsafe fn load_u8x32_unchecked<S: Simd>(simd: S, src: &[u8], pos: usize) -> u8x32<S> {
     debug_assert!(pos + MAX_MATCH_LEN <= src.len());
     // SAFETY: caller guarantees `pos..pos + 32` is inside `src`. `[u8; 32]`
@@ -140,6 +150,41 @@ fn lcp_heavy<S: Simd>(simd: S, src: &[u8], a: usize, b: usize, limit: usize) -> 
         let av = paranoid_unsafe_call!(load_u8x32_unchecked(simd, src, a + off));
         let bv = paranoid_unsafe_call!(load_u8x32_unchecked(simd, src, b + off));
         let len = lcp_loaded(av, bv);
+        off += len;
+        if len < VECTOR_WIDTH {
+            return off;
+        }
+    }
+    while off + 8 <= limit {
+        let diff = paranoid_unsafe_call!(read_u64_le(src, a + off))
+            ^ paranoid_unsafe_call!(read_u64_le(src, b + off));
+        if diff != 0 {
+            return off + (diff.trailing_zeros() as usize >> 3);
+        }
+        off += 8;
+    }
+    while off < limit && src[a + off] == src[b + off] {
+        off += 1;
+    }
+    off
+}
+
+#[cfg(all(not(feature = "paranoid"), target_arch = "x86_64"))]
+#[target_feature(enable = "avx2")]
+unsafe fn lcp_heavy_avx2(src: &[u8], a: usize, b: usize, limit: usize) -> usize {
+    debug_assert!(a + limit <= src.len());
+    debug_assert!(b + limit <= src.len());
+
+    let mut off = 0usize;
+    while off + VECTOR_WIDTH <= limit {
+        // SAFETY: Caller proves both LCP windows through `limit`; the loop
+        // guard keeps this 32-byte load inside those windows.
+        let av = unsafe { _mm256_loadu_si256(src.as_ptr().add(a + off).cast::<__m256i>()) };
+        // SAFETY: Same contract as above for the second window.
+        let bv = unsafe { _mm256_loadu_si256(src.as_ptr().add(b + off).cast::<__m256i>()) };
+        let eq = _mm256_cmpeq_epi8(av, bv);
+        let diff = !(_mm256_movemask_epi8(eq) as u32);
+        let len = diff.trailing_zeros() as usize;
         off += len;
         if len < VECTOR_WIDTH {
             return off;
@@ -298,6 +343,13 @@ fn compress_dispatch_level1(src: &[u8], dst: &mut [u8]) -> usize {
 #[cfg(not(feature = "paranoid"))]
 #[inline(never)]
 fn compress_dispatch_level2(src: &[u8], dst: &mut [u8]) -> usize {
+    #[cfg(all(feature = "std", target_arch = "x86_64"))]
+    if std::arch::is_x86_feature_detected!("avx2") {
+        // SAFETY: Runtime feature check guarantees AVX2. Heavy match-finder
+        // callers keep all vector reads inside `src`.
+        return unsafe { heavy_compress_avx2(src, dst) };
+    }
+
     let level_obj = fearless_simd::Level::new();
     fearless_simd::dispatch!(level_obj, simd => heavy_compress(simd, src, dst))
 }
@@ -463,9 +515,10 @@ fn find_heavy_match_with<F>(
 where
     F: FnMut(usize, usize, usize) -> usize,
 {
-    if pos + MIN_MATCH_LEN > match_end_limit {
-        return HeavyMatch { len: 0, dis: 0 };
-    }
+    debug_assert!(
+        pos.checked_add(MIN_MATCH_LEN)
+            .is_some_and(|end| end <= match_end_limit)
+    );
 
     let limit = HEAVY_MAX_MATCH_LEN.min(match_end_limit - pos);
     let mut best_len = MIN_MATCH_LEN - 1;
@@ -482,19 +535,25 @@ where
     if best_len < HEAVY_NICE_LEN {
         let h = hash5(src, pos);
         let mut candidate = chains.head[h];
-        let mut steps = 0usize;
-        while candidate != HEAVY_NIL && steps < HEAVY_MAX_CHAIN {
-            let c = candidate as usize;
-            if c > pos {
+        let mut steps = 0u32;
+        let pos32 = pos as u32;
+        while candidate != HEAVY_NIL && steps < HEAVY_MAX_CHAIN as u32 {
+            debug_assert!((candidate as usize) <= pos);
+            let dis32 = pos32.wrapping_sub(candidate);
+            if dis32 > HEAVY_MAX_DISTANCE as u32 {
                 break;
             }
-            let dis = pos - c;
-            if dis > HEAVY_MAX_DISTANCE {
-                break;
-            }
-            if dis >= HEAVY_MIN_DISTANCE {
+            if dis32 >= HEAVY_MIN_DISTANCE as u32 {
                 steps += 1;
-                if src[pos - dis + best_len] == src[pos + best_len] {
+                let dis = dis32 as usize;
+                #[cfg(not(feature = "paranoid"))]
+                let can_beat =
+                    paranoid_unsafe_call!(read_byte_unchecked(src, pos - dis + best_len))
+                        == paranoid_unsafe_call!(read_byte_unchecked(src, pos + best_len));
+                #[cfg(feature = "paranoid")]
+                let can_beat = src[pos - dis + best_len] == src[pos + best_len];
+
+                if can_beat {
                     let len = lcp_at(pos, pos - dis, limit);
                     if len > best_len {
                         best_len = len;
@@ -505,7 +564,7 @@ where
                     }
                 }
             }
-            candidate = chains.prev[c & HEAVY_RING_MASK];
+            candidate = chains.prev[(candidate as usize) & HEAVY_RING_MASK];
         }
     }
 
@@ -531,6 +590,22 @@ fn find_heavy_match<S: Simd>(
 ) -> HeavyMatch {
     find_heavy_match_with(src, chains, pos, seed, match_end_limit, |a, b, limit| {
         lcp_heavy(simd, src, a, b, limit)
+    })
+}
+
+#[cfg(all(not(feature = "paranoid"), target_arch = "x86_64"))]
+#[target_feature(enable = "avx2")]
+unsafe fn find_heavy_match_avx2(
+    src: &[u8],
+    chains: &HeavyHashChains,
+    pos: usize,
+    seed: usize,
+    match_end_limit: usize,
+) -> HeavyMatch {
+    find_heavy_match_with(src, chains, pos, seed, match_end_limit, |a, b, limit| {
+        // SAFETY: `find_heavy_match_with` caps `limit` to the heavy match end
+        // and only passes prior candidates inside the same source slice.
+        unsafe { lcp_heavy_avx2(src, a, b, limit) }
     })
 }
 
@@ -1527,6 +1602,16 @@ fn heavy_compress<S: Simd>(simd: S, src: &[u8], dst: &mut [u8]) -> usize {
     })
 }
 
+#[cfg(all(not(feature = "paranoid"), target_arch = "x86_64"))]
+#[target_feature(enable = "avx2")]
+unsafe fn heavy_compress_avx2(src: &[u8], dst: &mut [u8]) -> usize {
+    heavy_compress_body(src, dst, |src, chains, pos, seed, match_end_limit| {
+        // SAFETY: Runtime dispatch selected AVX2; heavy matcher maintains the
+        // same source bounds contract as the generic SIMD path.
+        unsafe { find_heavy_match_avx2(src, chains, pos, seed, match_end_limit) }
+    })
+}
+
 #[cfg(feature = "paranoid")]
 #[inline(always)]
 fn heavy_compress(src: &[u8], dst: &mut [u8]) -> usize {
@@ -1897,6 +1982,33 @@ mod kani_proofs {
 
         assert!(candidate.checked_add(8).unwrap() <= src_len);
         assert!(candidate.checked_add(limit).unwrap() <= src_len);
+    }
+
+    #[kani::proof]
+    #[cfg(not(feature = "paranoid"))]
+    fn heavy_matcher_prefilter_reads_are_in_bounds() {
+        let src_len: usize = kani::any();
+        let pos: usize = kani::any();
+
+        kani::assume(src_len >= HEAVY_LITERAL_SUFFIX);
+        let match_end_limit = src_len - HEAVY_LITERAL_SUFFIX;
+        let pos_after_min = pos.checked_add(MIN_MATCH_LEN);
+        kani::assume(pos_after_min.is_some());
+        kani::assume(pos_after_min.unwrap() <= match_end_limit);
+
+        let limit = HEAVY_MAX_MATCH_LEN.min(match_end_limit - pos);
+        let best_len: usize = kani::any();
+        kani::assume(best_len <= limit);
+        kani::assume(best_len < HEAVY_NICE_LEN);
+
+        let candidate: usize = kani::any();
+        kani::assume(candidate <= pos);
+        let dis = pos - candidate;
+        kani::assume(dis >= HEAVY_MIN_DISTANCE);
+        kani::assume(dis <= HEAVY_MAX_DISTANCE);
+
+        assert!(pos.checked_add(best_len).unwrap() < src_len);
+        assert!(candidate.checked_add(best_len).unwrap() < src_len);
     }
 
     #[kani::proof]

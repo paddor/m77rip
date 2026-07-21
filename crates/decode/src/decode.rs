@@ -14,6 +14,14 @@ fn corrupt_input() -> Result<usize, Error> {
 #[cfg(not(feature = "paranoid"))]
 const RED_SLACK: usize = 8;
 #[cfg(not(feature = "paranoid"))]
+const HEAVY_DECODE_LITERAL_COPY: usize = 16;
+#[cfg(not(feature = "paranoid"))]
+const HEAVY_FAST_INLINE_LIT_MAX: usize = HEAVY_TOKEN_LIT_MAX - 1;
+#[cfg(not(feature = "paranoid"))]
+const HEAVY_FAST_SOURCE_GAP: usize = 4 + HEAVY_FAST_INLINE_LIT_MAX;
+#[cfg(not(feature = "paranoid"))]
+const HEAVY_FAST_OUTPUT_GAP: usize = HEAVY_FAST_INLINE_LIT_MAX + HEAVY_MAX_MATCH_LEN;
+#[cfg(not(feature = "paranoid"))]
 const MAX_INLINE_LIT_LEN: usize = TOKEN_LIT_MAX - 1;
 #[cfg(not(feature = "paranoid"))]
 const MAX_TOKEN_MATCH_LEN: usize = (TOKEN_MATCH_MASK as usize) + MIN_MATCH_LEN - 1;
@@ -28,6 +36,10 @@ const _: () = assert!(MAX_INLINE_LIT_LEN + VECTOR_WIDTH - (RED_SLACK + 1) <= LIT
 const _: () = assert!(MAX_INLINE_LIT_LEN + MAX_TOKEN_MATCH_LEN - (RED_SLACK + 1) <= LITERAL_SUFFIX);
 const _: () = assert!(HEAVY_MIN_DISTANCE > VECTOR_WIDTH);
 const _: () = assert!(HEAVY_LITERAL_SUFFIX >= 2 * VECTOR_WIDTH);
+#[cfg(not(feature = "paranoid"))]
+const _: () = assert!(HEAVY_FAST_INLINE_LIT_MAX < HEAVY_TOKEN_LIT_MAX);
+#[cfg(not(feature = "paranoid"))]
+const _: () = assert!(HEAVY_FAST_OUTPUT_GAP <= HEAVY_MAX_DISTANCE);
 
 #[cfg(not(feature = "paranoid"))]
 #[allow(unused_imports)]
@@ -176,7 +188,7 @@ pub fn decompress_into(src: &[u8], dst: &mut [u8]) -> Result<usize, Error> {
     }
 
     if flags & FLAG_HEAVY != 0 {
-        return decompress_into_heavy(src, dst, original_size);
+        return decompress_into_heavy(src, dst, original_size, flags);
     }
 
     if original_size <= SMALL_LIM {
@@ -232,7 +244,15 @@ pub fn decompress_into(src: &[u8], dst: &mut [u8]) -> Result<usize, Error> {
     )
 }
 
-fn decompress_into_heavy(src: &[u8], dst: &mut [u8], original_size: usize) -> Result<usize, Error> {
+fn decompress_into_heavy(
+    src: &[u8],
+    dst: &mut [u8],
+    original_size: usize,
+    flags: u8,
+) -> Result<usize, Error> {
+    #[cfg(feature = "paranoid")]
+    let _ = flags;
+
     if original_size <= HEAVY_SMALL_LIM {
         let raw_end = HEADER_SIZE
             .checked_add(original_size)
@@ -262,6 +282,56 @@ fn decompress_into_heavy(src: &[u8], dst: &mut [u8], original_size: usize) -> Re
     }
 
     let token_output_end = original_size - literal_suffix_cnt;
+    #[cfg(not(feature = "paranoid"))]
+    {
+        #[cfg(all(feature = "std", target_arch = "x86_64"))]
+        if std::arch::is_x86_feature_detected!("avx2") {
+            // SAFETY: runtime feature check guarantees AVX2. The decoder loop
+            // performs the same format bounds checks as the scalar fast path.
+            return unsafe {
+                if flags & FLAG_HEAVY_COND != 0 {
+                    decompress_heavy_loop_fast_avx2::<true>(
+                        src,
+                        dst,
+                        original_size,
+                        literal_suffix_cnt,
+                        non_suffix_len,
+                        token_output_end,
+                    )
+                } else {
+                    decompress_heavy_loop_fast_avx2::<false>(
+                        src,
+                        dst,
+                        original_size,
+                        literal_suffix_cnt,
+                        non_suffix_len,
+                        token_output_end,
+                    )
+                }
+            };
+        }
+
+        if flags & FLAG_HEAVY_COND != 0 {
+            decompress_heavy_loop_fast::<true>(
+                src,
+                dst,
+                original_size,
+                literal_suffix_cnt,
+                non_suffix_len,
+                token_output_end,
+            )
+        } else {
+            decompress_heavy_loop_fast::<false>(
+                src,
+                dst,
+                original_size,
+                literal_suffix_cnt,
+                non_suffix_len,
+                token_output_end,
+            )
+        }
+    }
+    #[cfg(feature = "paranoid")]
     decompress_heavy_loop(
         src,
         dst,
@@ -272,6 +342,7 @@ fn decompress_into_heavy(src: &[u8], dst: &mut [u8], original_size: usize) -> Re
     )
 }
 
+#[cfg(feature = "paranoid")]
 fn decompress_heavy_loop(
     src: &[u8],
     dst: &mut [u8],
@@ -349,6 +420,353 @@ fn decompress_heavy_loop(
     Ok(original_size)
 }
 
+#[cfg(not(feature = "paranoid"))]
+#[allow(clippy::too_many_arguments)]
+fn decompress_heavy_loop_fast<const CONDITIONAL_MATCH_COPY: bool>(
+    src: &[u8],
+    dst: &mut [u8],
+    original_size: usize,
+    literal_suffix_cnt: usize,
+    suffix_start_in_src: usize,
+    token_output_end: usize,
+) -> Result<usize, Error> {
+    let mut control = EXT_HEADER_SIZE;
+    let mut literals = suffix_start_in_src;
+    let mut out = 0usize;
+
+    while control < literals {
+        let token = paranoid_unsafe_call!(primitives::read_u32_le(src, control));
+        control += 4;
+
+        let mut lit_len = (token >> 26) as usize;
+        let match_code = ((token >> 20) & 0x3F) as usize;
+        if match_code == 0 {
+            return corrupt_input();
+        }
+        let match_len = HEAVY_LEN_OF[match_code] as usize;
+        let dis = (token & HEAVY_DIS_MASK) as usize + HEAVY_MIN_DISTANCE;
+
+        if lit_len == HEAVY_TOKEN_LIT_MAX {
+            loop {
+                if control >= literals {
+                    return corrupt_input();
+                }
+                let extra = paranoid_unsafe_call!(primitives::read_byte(src, control)) as usize;
+                control += 1;
+                lit_len = lit_len.checked_add(extra).ok_or(Error::CorruptInput)?;
+                if extra < 255 {
+                    break;
+                }
+            }
+        }
+
+        if control > literals || lit_len > literals - control {
+            return corrupt_input();
+        }
+        literals -= lit_len;
+
+        let after_literals = out.checked_add(lit_len).ok_or(Error::CorruptInput)?;
+        let token_end = after_literals
+            .checked_add(match_len)
+            .ok_or(Error::CorruptInput)?;
+        if token_end > token_output_end {
+            return corrupt_input();
+        }
+
+        copy_heavy_literals_fast(src, literals, dst, out, lit_len);
+        out = after_literals;
+
+        if dis > out {
+            return corrupt_input();
+        }
+        copy_heavy_match_fast::<CONDITIONAL_MATCH_COPY>(dst, out - dis, out, match_len);
+        out = token_end;
+    }
+
+    if out != token_output_end {
+        return corrupt_input();
+    }
+    paranoid_unsafe_call!(primitives::copy_from_src(
+        src,
+        suffix_start_in_src,
+        dst,
+        out,
+        literal_suffix_cnt,
+    ));
+    Ok(original_size)
+}
+
+#[cfg(all(not(feature = "paranoid"), target_arch = "x86_64"))]
+#[target_feature(enable = "avx2")]
+#[allow(clippy::too_many_arguments)]
+unsafe fn decompress_heavy_loop_fast_avx2<const CONDITIONAL_MATCH_COPY: bool>(
+    src: &[u8],
+    dst: &mut [u8],
+    original_size: usize,
+    literal_suffix_cnt: usize,
+    suffix_start_in_src: usize,
+    token_output_end: usize,
+) -> Result<usize, Error> {
+    let mut control = EXT_HEADER_SIZE;
+    let mut literals = suffix_start_in_src;
+    let mut out = 0usize;
+
+    while control < literals {
+        while heavy_fast_zone(control, literals, out, token_output_end) {
+            let token_pos = control;
+            let token = paranoid_unsafe_call!(primitives::read_u32_le(src, control));
+            control += 4;
+
+            let lit_len = (token >> 26) as usize;
+            if lit_len == HEAVY_TOKEN_LIT_MAX {
+                control = token_pos;
+                break;
+            }
+
+            let match_code = ((token >> 20) & 0x3F) as usize;
+            if match_code == 0 {
+                return corrupt_input();
+            }
+            let match_len = HEAVY_LEN_OF[match_code] as usize;
+            let dis = (token & HEAVY_DIS_MASK) as usize + HEAVY_MIN_DISTANCE;
+
+            literals -= lit_len;
+            copy_heavy_literals_fast_avx2(src, literals, dst, out, lit_len);
+
+            let after_literals = out + lit_len;
+            if dis > after_literals {
+                return corrupt_input();
+            }
+            copy_heavy_match_fast_avx2::<CONDITIONAL_MATCH_COPY>(
+                dst,
+                after_literals - dis,
+                after_literals,
+                match_len,
+            );
+            out = after_literals + match_len;
+        }
+
+        if control < literals {
+            checked_heavy_step_fast_avx2::<CONDITIONAL_MATCH_COPY>(
+                src,
+                dst,
+                &mut control,
+                &mut literals,
+                &mut out,
+                token_output_end,
+            )?;
+        }
+    }
+
+    if out != token_output_end {
+        return corrupt_input();
+    }
+    paranoid_unsafe_call!(primitives::copy_from_src(
+        src,
+        suffix_start_in_src,
+        dst,
+        out,
+        literal_suffix_cnt,
+    ));
+    Ok(original_size)
+}
+
+#[cfg(all(not(feature = "paranoid"), target_arch = "x86_64"))]
+#[inline(always)]
+fn heavy_fast_zone(control: usize, literals: usize, out: usize, token_output_end: usize) -> bool {
+    debug_assert!(control <= literals);
+    debug_assert!(out <= token_output_end);
+    literals - control >= HEAVY_FAST_SOURCE_GAP && token_output_end - out >= HEAVY_FAST_OUTPUT_GAP
+}
+
+#[cfg(all(not(feature = "paranoid"), target_arch = "x86_64"))]
+#[allow(clippy::too_many_arguments)]
+#[inline(always)]
+fn checked_heavy_step_fast_avx2<const CONDITIONAL_MATCH_COPY: bool>(
+    src: &[u8],
+    dst: &mut [u8],
+    control: &mut usize,
+    literals: &mut usize,
+    out: &mut usize,
+    token_output_end: usize,
+) -> Result<(), Error> {
+    let token = paranoid_unsafe_call!(primitives::read_u32_le(src, *control));
+    *control += 4;
+
+    let mut lit_len = (token >> 26) as usize;
+    let match_code = ((token >> 20) & 0x3F) as usize;
+    if match_code == 0 {
+        return corrupt_input().map(|_| ());
+    }
+    let match_len = HEAVY_LEN_OF[match_code] as usize;
+    let dis = (token & HEAVY_DIS_MASK) as usize + HEAVY_MIN_DISTANCE;
+
+    if lit_len == HEAVY_TOKEN_LIT_MAX {
+        loop {
+            if *control >= *literals {
+                return corrupt_input().map(|_| ());
+            }
+            let extra = paranoid_unsafe_call!(primitives::read_byte(src, *control)) as usize;
+            *control += 1;
+            lit_len = lit_len.checked_add(extra).ok_or(Error::CorruptInput)?;
+            if extra < 255 {
+                break;
+            }
+        }
+    }
+
+    if *control > *literals || lit_len > *literals - *control {
+        return corrupt_input().map(|_| ());
+    }
+    *literals -= lit_len;
+
+    let after_literals = out.checked_add(lit_len).ok_or(Error::CorruptInput)?;
+    let token_end = after_literals
+        .checked_add(match_len)
+        .ok_or(Error::CorruptInput)?;
+    if token_end > token_output_end {
+        return corrupt_input().map(|_| ());
+    }
+
+    copy_heavy_literals_fast_avx2(src, *literals, dst, *out, lit_len);
+    *out = after_literals;
+
+    if dis > *out {
+        return corrupt_input().map(|_| ());
+    }
+    copy_heavy_match_fast_avx2::<CONDITIONAL_MATCH_COPY>(dst, *out - dis, *out, match_len);
+    *out = token_end;
+    Ok(())
+}
+
+#[cfg(not(feature = "paranoid"))]
+#[inline(always)]
+fn copy_heavy_literals_fast(
+    src: &[u8],
+    src_pos: usize,
+    dst: &mut [u8],
+    dst_pos: usize,
+    lit_len: usize,
+) {
+    if lit_len > HEAVY_DECODE_LITERAL_COPY {
+        paranoid_unsafe_call!(primitives::wild_copy_literals_32(
+            src, src_pos, dst, dst_pos,
+        ));
+        if lit_len > VECTOR_WIDTH {
+            paranoid_unsafe_call!(primitives::copy_from_src(
+                src,
+                src_pos + VECTOR_WIDTH,
+                dst,
+                dst_pos + VECTOR_WIDTH,
+                lit_len - VECTOR_WIDTH,
+            ));
+        }
+    } else {
+        paranoid_unsafe_call!(primitives::wild_copy_literals_16(
+            src, src_pos, dst, dst_pos, lit_len,
+        ));
+    }
+}
+
+#[cfg(all(not(feature = "paranoid"), target_arch = "x86_64"))]
+#[inline(always)]
+fn copy_heavy_literals_fast_avx2(
+    src: &[u8],
+    src_pos: usize,
+    dst: &mut [u8],
+    dst_pos: usize,
+    lit_len: usize,
+) {
+    if lit_len > HEAVY_DECODE_LITERAL_COPY {
+        paranoid_unsafe_call!(primitives::avx2_copy_literals_32(
+            src, src_pos, dst, dst_pos,
+        ));
+        if lit_len > VECTOR_WIDTH {
+            paranoid_unsafe_call!(primitives::copy_from_src(
+                src,
+                src_pos + VECTOR_WIDTH,
+                dst,
+                dst_pos + VECTOR_WIDTH,
+                lit_len - VECTOR_WIDTH,
+            ));
+        }
+    } else {
+        paranoid_unsafe_call!(primitives::wild_copy_literals_16(
+            src, src_pos, dst, dst_pos, lit_len,
+        ));
+    }
+}
+
+#[cfg(not(feature = "paranoid"))]
+#[inline(always)]
+fn copy_heavy_match_fast<const CONDITIONAL_MATCH_COPY: bool>(
+    dst: &mut [u8],
+    match_src: usize,
+    out: usize,
+    match_len: usize,
+) {
+    paranoid_unsafe_call!(primitives::wild_copy_match_32(
+        dst,
+        match_src,
+        out,
+        VECTOR_WIDTH,
+    ));
+
+    if CONDITIONAL_MATCH_COPY && match_len <= VECTOR_WIDTH {
+        return;
+    }
+
+    paranoid_unsafe_call!(primitives::wild_copy_match_32(
+        dst,
+        match_src + VECTOR_WIDTH,
+        out + VECTOR_WIDTH,
+        VECTOR_WIDTH,
+    ));
+
+    let mut copied = 2 * VECTOR_WIDTH;
+    while copied < match_len {
+        paranoid_unsafe_call!(primitives::wild_copy_match_32(
+            dst,
+            match_src + copied,
+            out + copied,
+            VECTOR_WIDTH,
+        ));
+        copied += VECTOR_WIDTH;
+    }
+}
+
+#[cfg(all(not(feature = "paranoid"), target_arch = "x86_64"))]
+#[inline(always)]
+fn copy_heavy_match_fast_avx2<const CONDITIONAL_MATCH_COPY: bool>(
+    dst: &mut [u8],
+    match_src: usize,
+    out: usize,
+    match_len: usize,
+) {
+    paranoid_unsafe_call!(primitives::avx2_copy_match_32(dst, match_src, out));
+
+    if CONDITIONAL_MATCH_COPY && match_len <= VECTOR_WIDTH {
+        return;
+    }
+
+    paranoid_unsafe_call!(primitives::avx2_copy_match_32(
+        dst,
+        match_src + VECTOR_WIDTH,
+        out + VECTOR_WIDTH,
+    ));
+
+    let mut copied = 2 * VECTOR_WIDTH;
+    while copied < match_len {
+        paranoid_unsafe_call!(primitives::avx2_copy_match_32(
+            dst,
+            match_src + copied,
+            out + copied,
+        ));
+        copied += VECTOR_WIDTH;
+    }
+}
+
+#[cfg(feature = "paranoid")]
 #[inline(always)]
 fn copy_heavy_match(
     dst: &mut [u8],
@@ -1031,6 +1449,115 @@ mod kani_proofs {
         assert!(match_code < HEAVY_LEN_OF.len());
         assert!(dis >= HEAVY_MIN_DISTANCE);
         assert!(dis <= HEAVY_MAX_DISTANCE);
+    }
+
+    #[kani::proof]
+    #[cfg(not(feature = "paranoid"))]
+    fn heavy_token_read_can_use_suffix_slack() {
+        let non_suffix_len: usize = kani::any();
+        let literal_suffix_cnt: usize = kani::any();
+        kani::assume(literal_suffix_cnt >= HEAVY_LITERAL_SUFFIX);
+        kani::assume(non_suffix_len <= usize::MAX - literal_suffix_cnt);
+        let src_len = non_suffix_len + literal_suffix_cnt;
+
+        let literals: usize = kani::any();
+        let control: usize = kani::any();
+        kani::assume(literals <= non_suffix_len);
+        kani::assume(control < literals);
+
+        let read_end = control.checked_add(4);
+        assert!(read_end.is_some());
+        assert!(read_end.unwrap() <= src_len);
+    }
+
+    #[kani::proof]
+    #[cfg(not(feature = "paranoid"))]
+    fn heavy_literal_copy_geometry_is_in_bounds() {
+        let src_len: usize = kani::any();
+        kani::assume(src_len >= HEAVY_LITERAL_SUFFIX);
+        let suffix_start = src_len - HEAVY_LITERAL_SUFFIX;
+
+        let token_output_end: usize = kani::any();
+        kani::assume(token_output_end <= usize::MAX - HEAVY_LITERAL_SUFFIX);
+        let original_size = token_output_end + HEAVY_LITERAL_SUFFIX;
+
+        let old_literals: usize = kani::any();
+        let control: usize = kani::any();
+        let lit_len: usize = kani::any();
+        let match_len: usize = kani::any();
+        let out: usize = kani::any();
+
+        kani::assume(old_literals <= suffix_start);
+        kani::assume(control <= old_literals);
+        kani::assume(lit_len > HEAVY_DECODE_LITERAL_COPY);
+        kani::assume(lit_len <= old_literals - control);
+        kani::assume(match_len >= MIN_MATCH_LEN);
+        kani::assume(match_len <= HEAVY_MAX_MATCH_LEN);
+
+        let after_literals = out.checked_add(lit_len);
+        kani::assume(after_literals.is_some());
+        let token_end = after_literals.unwrap().checked_add(match_len);
+        kani::assume(token_end.is_some());
+        kani::assume(token_end.unwrap() <= token_output_end);
+
+        let src_pos = old_literals - lit_len;
+        assert!(src_pos.checked_add(VECTOR_WIDTH).unwrap() <= src_len);
+        assert!(out.checked_add(VECTOR_WIDTH).unwrap() <= original_size);
+    }
+
+    #[kani::proof]
+    #[cfg(not(feature = "paranoid"))]
+    fn heavy_fast_non_extension_geometry_is_in_bounds() {
+        let src_len: usize = kani::any();
+        kani::assume(src_len >= HEAVY_LITERAL_SUFFIX);
+        let suffix_start = src_len - HEAVY_LITERAL_SUFFIX;
+
+        let token_output_end: usize = kani::any();
+        kani::assume(token_output_end <= usize::MAX - HEAVY_LITERAL_SUFFIX);
+        let original_size = token_output_end + HEAVY_LITERAL_SUFFIX;
+
+        let control: usize = kani::any();
+        let literals: usize = kani::any();
+        let out: usize = kani::any();
+        let lit_len: usize = kani::any();
+        let match_len: usize = kani::any();
+        let dis: usize = kani::any();
+
+        kani::assume(control <= literals);
+        kani::assume(literals <= suffix_start);
+        kani::assume(literals - control >= HEAVY_FAST_SOURCE_GAP);
+        kani::assume(out <= token_output_end);
+        kani::assume(token_output_end - out >= HEAVY_FAST_OUTPUT_GAP);
+        kani::assume(lit_len <= HEAVY_FAST_INLINE_LIT_MAX);
+        kani::assume(match_len >= MIN_MATCH_LEN);
+        kani::assume(match_len <= HEAVY_MAX_MATCH_LEN);
+        kani::assume(dis >= HEAVY_MIN_DISTANCE);
+        kani::assume(dis <= HEAVY_MAX_DISTANCE);
+
+        let control_after = control.checked_add(4);
+        assert!(control_after.is_some());
+        assert!(control_after.unwrap() <= src_len);
+        assert!(lit_len <= literals - control_after.unwrap());
+
+        let literal_src = literals - lit_len;
+        assert!(literal_src.checked_add(VECTOR_WIDTH).unwrap() <= src_len);
+        assert!(out.checked_add(VECTOR_WIDTH).unwrap() <= original_size);
+
+        let after_literals = out.checked_add(lit_len);
+        assert!(after_literals.is_some());
+        kani::assume(dis <= after_literals.unwrap());
+        assert!(after_literals.unwrap() >= dis);
+        let token_end = after_literals.unwrap().checked_add(match_len);
+        assert!(token_end.is_some());
+        assert!(token_end.unwrap() <= token_output_end);
+
+        let rounded = (match_len + (VECTOR_WIDTH - 1)) & !(VECTOR_WIDTH - 1);
+        let copy_end = after_literals.unwrap().checked_add(rounded);
+        assert!(copy_end.is_some());
+        assert!(copy_end.unwrap() <= original_size);
+
+        let match_src = after_literals.unwrap() - dis;
+        assert!(match_src.checked_add(VECTOR_WIDTH).unwrap() <= after_literals.unwrap());
     }
 
     #[kani::proof]
