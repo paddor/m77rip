@@ -13,7 +13,8 @@ const HASH_MUL: u32 = 2654435761;
 const LATEST_BATCH: usize = 176;
 const LATEST_INSERTS_PER_BATCH: usize = 8;
 const RING_BATCH: usize = 8;
-const RING_WIDTH: usize = 7;
+const LOOSE_RING_WIDTH: usize = 7;
+const DEFAULT_RING_WIDTH: usize = 13;
 const CHAIN_AFTER: usize = 8;
 const SKIP_SHIFT: usize = 6;
 #[cfg(not(feature = "paranoid"))]
@@ -23,17 +24,20 @@ const HEAVY_HASH_SIZE: usize = 1 << HEAVY_HASH_BITS;
 const HEAVY_RING_SIZE: usize = 1 << (HEAVY_WIN_BITS + 1);
 const HEAVY_RING_MASK: usize = HEAVY_RING_SIZE - 1;
 const HEAVY_NIL: u32 = u32::MAX;
-const HEAVY_MAX_CHAIN: usize = 192;
+const HEAVY_MAX_CHAIN: usize = 512;
 const HEAVY_NICE_LEN: usize = HEAVY_MAX_MATCH_LEN;
 const HEAVY_ACCEPT_LEN: usize = 5;
-const HEAVY_LAZY_LOOKAHEAD: bool = false;
-const HEAVY_LAZY_GAIN: usize = 4;
+const HEAVY_LAZY_MAX_STEPS: usize = 1;
+const HEAVY_LAZY_LOOKAHEAD: bool = HEAVY_LAZY_MAX_STEPS != 0;
+const HEAVY_LAZY_GATE: usize = 8;
+const HEAVY_LAZY_GAIN: usize = 1;
 const HEAVY_COND_FLAG_THRESH_NUM: usize = 14;
 const HEAVY_COND_FLAG_THRESH_DEN: usize = 100;
 
 const _: () = assert!(LATEST_INSERTS_PER_BATCH == 8);
 const _: () = assert!(LATEST_INSERTS_PER_BATCH <= LATEST_BATCH);
-const _: () = assert!(RING_WIDTH <= u8::MAX as usize + 1);
+const _: () = assert!(DEFAULT_RING_WIDTH <= u8::MAX as usize + 1);
+const _: () = assert!(LOOSE_RING_WIDTH <= u8::MAX as usize + 1);
 const _: () = assert!(HEAVY_MIN_DISTANCE > VECTOR_WIDTH);
 const _: () = assert!(HEAVY_RING_SIZE == 2 * HEAVY_NDIS);
 
@@ -410,28 +414,28 @@ impl LatestHashTable {
 }
 
 #[derive(Clone, Copy)]
-struct RingBucket {
-    entries: [u16; RING_WIDTH],
+struct RingBucket<const WIDTH: usize> {
+    entries: [u16; WIDTH],
     next: u8,
 }
 
-impl RingBucket {
+impl<const WIDTH: usize> RingBucket<WIDTH> {
     fn new() -> Self {
         Self {
-            entries: [0u16; RING_WIDTH],
+            entries: [0u16; WIDTH],
             next: 0,
         }
     }
 }
 
-struct RingHashTable {
-    buckets: Box<[RingBucket]>,
+struct RingHashTable<const WIDTH: usize> {
+    buckets: Box<[RingBucket<WIDTH>]>,
 }
 
-impl RingHashTable {
+impl<const WIDTH: usize> RingHashTable<WIDTH> {
     fn new() -> Self {
         Self {
-            buckets: vec![RingBucket::new(); HASH_SIZE].into_boxed_slice(),
+            buckets: vec![RingBucket::<WIDTH>::new(); HASH_SIZE].into_boxed_slice(),
         }
     }
 
@@ -441,7 +445,7 @@ impl RingHashTable {
         let bucket = &mut self.buckets[hsh];
         let next = bucket.next as usize;
         bucket.entries[next] = pos as u16;
-        bucket.next = if next == RING_WIDTH - 1 {
+        bucket.next = if next == WIDTH - 1 {
             0
         } else {
             (next + 1) as u8
@@ -450,7 +454,7 @@ impl RingHashTable {
 
     #[cfg(feature = "paranoid")]
     #[inline(always)]
-    fn bucket(&self, hsh: usize) -> &RingBucket {
+    fn bucket(&self, hsh: usize) -> &RingBucket<WIDTH> {
         &self.buckets[hsh]
     }
 
@@ -460,11 +464,11 @@ impl RingHashTable {
         debug_assert!(hsh < HASH_SIZE);
         let bucket = unsafe { self.buckets.get_unchecked_mut(hsh) };
         let next = bucket.next as usize;
-        debug_assert!(next < RING_WIDTH);
+        debug_assert!(next < WIDTH);
         unsafe {
             *bucket.entries.get_unchecked_mut(next) = pos as u16;
         }
-        bucket.next = if next == RING_WIDTH - 1 {
+        bucket.next = if next == WIDTH - 1 {
             0
         } else {
             (next + 1) as u8
@@ -473,7 +477,7 @@ impl RingHashTable {
 
     #[cfg(not(feature = "paranoid"))]
     #[inline(always)]
-    unsafe fn bucket_unchecked(&self, hsh: usize) -> &RingBucket {
+    unsafe fn bucket_unchecked(&self, hsh: usize) -> &RingBucket<WIDTH> {
         debug_assert!(hsh < HASH_SIZE);
         unsafe { self.buckets.get_unchecked(hsh) }
     }
@@ -674,7 +678,59 @@ fn find_latest_match(src: &[u8], ht: &LatestHashTable, pos: usize) -> (usize, us
 
 #[cfg(not(feature = "paranoid"))]
 #[inline(always)]
-fn find_ring_match<S: Simd>(simd: S, src: &[u8], ht: &RingHashTable, pos: usize) -> (usize, usize) {
+fn find_ring_match_default<S: Simd>(
+    simd: S,
+    src: &[u8],
+    ht: &RingHashTable<DEFAULT_RING_WIDTH>,
+    pos: usize,
+) -> (usize, usize) {
+    debug_assert!(pos > HASHTAB_LAG);
+    debug_assert!(pos + MAX_MATCH_LEN <= src.len());
+
+    let hsh = hash4(paranoid_unsafe_call!(read_u32_le_unchecked(src, pos)));
+    let reg = paranoid_unsafe_call!(load_u8x32_unchecked(simd, src, pos));
+    let bucket = paranoid_unsafe_call!(ht.bucket_unchecked(hsh));
+
+    let mut lst = 0;
+    let mut match_len = 0;
+
+    macro_rules! probe {
+        ($i:literal) => {{
+            let ilst = recover_entry_pos(bucket.entries[$i], pos);
+            let ireg = paranoid_unsafe_call!(load_u8x32_unchecked(simd, src, ilst));
+            let imatch_len = lcp_loaded(reg, ireg);
+            if imatch_len > match_len {
+                lst = ilst;
+                match_len = imatch_len;
+            }
+        }};
+    }
+
+    probe!(0);
+    probe!(1);
+    probe!(2);
+    probe!(3);
+    probe!(4);
+    probe!(5);
+    probe!(6);
+    probe!(7);
+    probe!(8);
+    probe!(9);
+    probe!(10);
+    probe!(11);
+    probe!(12);
+
+    (match_len, lst)
+}
+
+#[cfg(not(feature = "paranoid"))]
+#[inline(always)]
+fn find_ring_match_loose<S: Simd>(
+    simd: S,
+    src: &[u8],
+    ht: &RingHashTable<LOOSE_RING_WIDTH>,
+    pos: usize,
+) -> (usize, usize) {
     debug_assert!(pos > HASHTAB_LAG);
     debug_assert!(pos + MAX_MATCH_LEN <= src.len());
 
@@ -710,7 +766,11 @@ fn find_ring_match<S: Simd>(simd: S, src: &[u8], ht: &RingHashTable, pos: usize)
 
 #[cfg(feature = "paranoid")]
 #[inline(always)]
-fn find_ring_match(src: &[u8], ht: &RingHashTable, pos: usize) -> (usize, usize) {
+fn find_ring_match<const WIDTH: usize>(
+    src: &[u8],
+    ht: &RingHashTable<WIDTH>,
+    pos: usize,
+) -> (usize, usize) {
     let hsh = hash4(read_u32_le(src, pos));
     let bucket = ht.bucket(hsh);
     let mut lst = 0;
@@ -789,7 +849,12 @@ fn batch_insert_latest(
 
 #[cfg(not(feature = "paranoid"))]
 #[inline(always)]
-fn batch_insert_ring(src: &[u8], ht: &mut RingHashTable, hpos: &mut usize, pos: usize) {
+fn batch_insert_ring<const WIDTH: usize>(
+    src: &[u8],
+    ht: &mut RingHashTable<WIDTH>,
+    hpos: &mut usize,
+    pos: usize,
+) {
     while pos >= *hpos + HASHTAB_LAG + RING_BATCH {
         macro_rules! insert {
             ($i:literal) => {{
@@ -815,7 +880,12 @@ fn batch_insert_ring(src: &[u8], ht: &mut RingHashTable, hpos: &mut usize, pos: 
 
 #[cfg(feature = "paranoid")]
 #[inline(always)]
-fn batch_insert_ring(src: &[u8], ht: &mut RingHashTable, hpos: &mut usize, pos: usize) {
+fn batch_insert_ring<const WIDTH: usize>(
+    src: &[u8],
+    ht: &mut RingHashTable<WIDTH>,
+    hpos: &mut usize,
+    pos: usize,
+) {
     while pos >= *hpos + HASHTAB_LAG + RING_BATCH {
         for i in 0..RING_BATCH {
             let insert_pos = *hpos + i;
@@ -1142,7 +1212,7 @@ fn default_compress(src: &[u8], dst: &mut [u8]) -> usize {
 #[inline(always)]
 fn default_compress_impl<S: Simd>(simd: S, src: &[u8], dst: &mut [u8]) -> usize {
     const LOOKAHEAD: usize = 2;
-    const LA_GATE: usize = 16;
+    const LA_GATE: usize = 8;
     const LA_PATE: usize = 8;
 
     let src_size = src.len();
@@ -1162,7 +1232,7 @@ fn default_compress_impl<S: Simd>(simd: S, src: &[u8], dst: &mut [u8]) -> usize 
     let mut drpos = dst_cap;
     let match_end_limit = src_size - LITERAL_SUFFIX;
 
-    let mut ht = RingHashTable::new();
+    let mut ht = RingHashTable::<DEFAULT_RING_WIDTH>::new();
     let mut pos: usize = 0;
     let mut hpos: usize = 0;
     let mut lit: usize = 0;
@@ -1172,7 +1242,7 @@ fn default_compress_impl<S: Simd>(simd: S, src: &[u8], dst: &mut [u8]) -> usize 
         batch_insert_ring(src, &mut ht, &mut hpos, pos);
 
         let (mut match_len, mut lst) = if pos > HASHTAB_LAG {
-            find_ring_match(simd, src, &ht, pos)
+            find_ring_match_default(simd, src, &ht, pos)
         } else {
             (0, 0)
         };
@@ -1184,7 +1254,7 @@ fn default_compress_impl<S: Simd>(simd: S, src: &[u8], dst: &mut [u8]) -> usize 
                 && npos + MAX_MATCH_LEN <= match_end_limit
                 && match_len < LA_GATE
             {
-                let (nmatch_len, nlst) = find_ring_match(simd, src, &ht, npos);
+                let (nmatch_len, nlst) = find_ring_match_default(simd, src, &ht, npos);
                 if nmatch_len > match_len {
                     pos = npos;
                     lst = nlst;
@@ -1230,7 +1300,7 @@ fn default_compress_impl<S: Simd>(simd: S, src: &[u8], dst: &mut [u8]) -> usize 
 #[inline(always)]
 fn default_compress_impl(src: &[u8], dst: &mut [u8]) -> usize {
     const LOOKAHEAD: usize = 2;
-    const LA_GATE: usize = 16;
+    const LA_GATE: usize = 8;
     const LA_PATE: usize = 8;
 
     let src_size = src.len();
@@ -1250,7 +1320,7 @@ fn default_compress_impl(src: &[u8], dst: &mut [u8]) -> usize {
     let mut drpos = dst_cap;
     let match_end_limit = src_size - LITERAL_SUFFIX;
 
-    let mut ht = RingHashTable::new();
+    let mut ht = RingHashTable::<DEFAULT_RING_WIDTH>::new();
     let mut pos: usize = 0;
     let mut hpos: usize = 0;
     let mut lit: usize = 0;
@@ -1349,7 +1419,7 @@ fn loose_compress_impl<S: Simd>(simd: S, src: &[u8], dst: &mut [u8]) -> usize {
     let mut drpos = dst_cap;
     let match_end_limit = src_size - LITERAL_SUFFIX;
 
-    let mut ht = RingHashTable::new();
+    let mut ht = RingHashTable::<LOOSE_RING_WIDTH>::new();
     let mut pos: usize = 0;
     let mut hpos: usize = 0;
     let mut lit: usize = 0;
@@ -1363,7 +1433,7 @@ fn loose_compress_impl<S: Simd>(simd: S, src: &[u8], dst: &mut [u8]) -> usize {
         batch_insert_ring(src, &mut ht, &mut hpos, pos);
 
         let (mut match_len, mut lst) = if pos > HASHTAB_LAG {
-            find_ring_match(simd, src, &ht, pos)
+            find_ring_match_loose(simd, src, &ht, pos)
         } else {
             (0, 0)
         };
@@ -1425,7 +1495,7 @@ fn loose_compress_impl<S: Simd>(simd: S, src: &[u8], dst: &mut [u8]) -> usize {
 
             batch_insert_ring(src, &mut ht, &mut hpos, pos);
             let (chain_match_len, chain_lst) = if pos > HASHTAB_LAG {
-                find_ring_match(simd, src, &ht, pos)
+                find_ring_match_loose(simd, src, &ht, pos)
             } else {
                 (0, 0)
             };
@@ -1480,7 +1550,7 @@ fn loose_compress_impl(src: &[u8], dst: &mut [u8]) -> usize {
     let mut drpos = dst_cap;
     let match_end_limit = src_size - LITERAL_SUFFIX;
 
-    let mut ht = RingHashTable::new();
+    let mut ht = RingHashTable::<LOOSE_RING_WIDTH>::new();
     let mut pos: usize = 0;
     let mut hpos: usize = 0;
     let mut lit: usize = 0;
@@ -1659,8 +1729,12 @@ where
         let mut match_len = m0.len;
         let mut match_dis = m0.dis;
 
-        if HEAVY_LAZY_LOOKAHEAD {
+        if HEAVY_LAZY_LOOKAHEAD && match_len < HEAVY_LAZY_GATE {
+            let mut lazy_steps = 0usize;
             loop {
+                if lazy_steps == HEAVY_LAZY_MAX_STEPS {
+                    break;
+                }
                 let npos = match_start + 1;
                 if npos + MIN_MATCH_LEN > match_end_limit {
                     break;
@@ -1685,6 +1759,7 @@ where
                 match_start = npos;
                 match_len = next.len;
                 match_dis = next.dis;
+                lazy_steps += 1;
             }
         }
 
@@ -1920,15 +1995,21 @@ mod kani_proofs {
     #[cfg(not(feature = "paranoid"))]
     fn ring_cursor_stays_in_bounds() {
         let next: u8 = kani::any();
-        kani::assume((next as usize) < RING_WIDTH);
+        let loose: bool = kani::any();
+        let width = if loose {
+            LOOSE_RING_WIDTH
+        } else {
+            DEFAULT_RING_WIDTH
+        };
+        kani::assume((next as usize) < width);
 
-        let updated = if next as usize == RING_WIDTH - 1 {
+        let updated = if next as usize == width - 1 {
             0
         } else {
             next + 1
         };
 
-        assert!((updated as usize) < RING_WIDTH);
+        assert!((updated as usize) < width);
     }
 
     #[kani::proof]
