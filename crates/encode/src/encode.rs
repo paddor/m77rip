@@ -13,9 +13,11 @@ const HASH_MUL: u32 = 2654435761;
 const LATEST_BATCH: usize = 176;
 const LATEST_INSERTS_PER_BATCH: usize = 8;
 const RING_BATCH: usize = 8;
-const RING_WIDTH: usize = 16;
+const RING_WIDTH: usize = 7;
 const CHAIN_AFTER: usize = 8;
 const SKIP_SHIFT: usize = 6;
+#[cfg(not(feature = "paranoid"))]
+const SPEED_SKIP_SHIFT: usize = 3;
 const HEAVY_HASH_BITS: u32 = 21;
 const HEAVY_HASH_SIZE: usize = 1 << HEAVY_HASH_BITS;
 const HEAVY_RING_SIZE: usize = 1 << (HEAVY_WIN_BITS + 1);
@@ -24,7 +26,8 @@ const HEAVY_NIL: u32 = u32::MAX;
 const HEAVY_MAX_CHAIN: usize = 192;
 const HEAVY_NICE_LEN: usize = HEAVY_MAX_MATCH_LEN;
 const HEAVY_ACCEPT_LEN: usize = 5;
-const HEAVY_LAZY_GAIN: usize = 1;
+const HEAVY_LAZY_LOOKAHEAD: bool = false;
+const HEAVY_LAZY_GAIN: usize = 4;
 const HEAVY_COND_FLAG_THRESH_NUM: usize = 14;
 const HEAVY_COND_FLAG_THRESH_DEN: usize = 100;
 
@@ -701,15 +704,6 @@ fn find_ring_match<S: Simd>(simd: S, src: &[u8], ht: &RingHashTable, pos: usize)
     probe!(4);
     probe!(5);
     probe!(6);
-    probe!(7);
-    probe!(8);
-    probe!(9);
-    probe!(10);
-    probe!(11);
-    probe!(12);
-    probe!(13);
-    probe!(14);
-    probe!(15);
 
     (match_len, lst)
 }
@@ -982,7 +976,7 @@ fn speed_compress_impl<S: Simd>(simd: S, src: &[u8], dst: &mut [u8]) -> usize {
         };
 
         if match_len < MIN_MATCH_LEN {
-            pos += 1 + (miss_run >> SKIP_SHIFT);
+            pos += 1 + (miss_run >> SPEED_SKIP_SHIFT);
             miss_run += 1;
             continue;
         }
@@ -1665,31 +1659,33 @@ where
         let mut match_len = m0.len;
         let mut match_dis = m0.dis;
 
-        loop {
-            let npos = match_start + 1;
-            if npos + MIN_MATCH_LEN > match_end_limit {
-                break;
-            }
+        if HEAVY_LAZY_LOOKAHEAD {
+            loop {
+                let npos = match_start + 1;
+                if npos + MIN_MATCH_LEN > match_end_limit {
+                    break;
+                }
 
-            while hpos <= npos {
-                chains.insert(src, hpos);
-                hpos += 1;
-            }
+                while hpos <= npos {
+                    chains.insert(src, hpos);
+                    hpos += 1;
+                }
 
-            let next = find_match(src, &chains, npos, seed, match_end_limit);
-            if next.len < HEAVY_ACCEPT_LEN {
-                break;
-            }
+                let next = find_match(src, &chains, npos, seed, match_end_limit);
+                if next.len < HEAVY_ACCEPT_LEN {
+                    break;
+                }
 
-            let cur_use = HEAVY_LEN_FLOOR[match_len.min(255)] as usize;
-            let next_use = HEAVY_LEN_FLOOR[next.len.min(255)] as usize;
-            if next_use < cur_use + HEAVY_LAZY_GAIN {
-                break;
-            }
+                let cur_use = HEAVY_LEN_FLOOR[match_len.min(255)] as usize;
+                let next_use = HEAVY_LEN_FLOOR[next.len.min(255)] as usize;
+                if next_use < cur_use + HEAVY_LAZY_GAIN {
+                    break;
+                }
 
-            match_start = npos;
-            match_len = next.len;
-            match_dis = next.dis;
+                match_start = npos;
+                match_len = next.len;
+                match_dis = next.dis;
+            }
         }
 
         while match_start > lit
