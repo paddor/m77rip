@@ -10,6 +10,8 @@ All notable changes to this project will be documented in this file.
 - Added level-specific compression bounds through `compress_bound_level`.
 - Reworked level 0, 1, and 2 parser constants to recover ratio while hitting
   the current default-build encoder speed targets.
+- Updated the benchmark summary chart to show level `-1`, `0`, `1`, and `2`
+  aggregate pipelines across compressible and incompressible inputs.
 - Kept the default encoder unsafe surface unchanged and covered the current
   release candidate with fmt, clippy, tests, Miri, Kani, ASan, and fuzz smoke
   runs.

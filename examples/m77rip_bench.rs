@@ -225,12 +225,7 @@ fn bench_m77rip_compress(data: &[u8], name: &str, target_ns: u64, level: i8) -> 
 }
 
 fn bench_m77rip(data: &[u8], name: &str, target_ns: u64, level: i8) -> BenchResult {
-    let compressed = if level < 0 {
-        m77rip::compress_level(data, level).unwrap()
-    } else {
-        // Use the C++ compressor when this level exists in the reference.
-        c_misa77_compress(data, level as u8)
-    };
+    let compressed = m77rip::compress_level(data, level).unwrap();
     let label = m77rip_level_label(level);
     let original_size = data.len();
     let mut decomp_buf = vec![0u8; original_size];
