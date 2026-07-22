@@ -91,6 +91,9 @@ GROUPS = [
     ("Incompressible", INCOMPRESSIBLE),
 ]
 
+TRANSFER_RATE = 100_000_000
+TRANSFER_LABEL = "100 MB/s"
+
 
 def escape(text):
     return (
@@ -262,11 +265,11 @@ def level_panel_data(results, tag, impls, transfer_rate):
     return data
 
 
-def draw_grid(L, x_left, x_right, y_top, y_bot, y_max):
+def draw_grid(L, x_left, x_right, y_top, y_bot, y_max, target_lines):
     def y(v):
         return y_bot - (v / y_max) * (y_bot - y_top)
 
-    step = nice_step(y_max, 4)
+    step = nice_step(y_max, target_lines)
     v = step
     while v <= y_max:
         yy = y(v)
@@ -281,7 +284,7 @@ def draw_grid(L, x_left, x_right, y_top, y_bot, y_max):
         v += step
 
 
-def draw_panel(L, title, impls, data, x_left, y_top, plot_w, plot_h):
+def draw_panel(L, title, impls, data, x_left, y_top, plot_w, plot_h, grid_lines=4):
     x_right = x_left + plot_w
     y_bot = y_top + plot_h
     y_max = max((sum(v) for v in data.values()), default=1.0) * 1.15
@@ -296,7 +299,7 @@ def draw_panel(L, title, impls, data, x_left, y_top, plot_w, plot_h):
         f' text-anchor="middle" fill="#e6edf3" font-size="12" font-weight="700">'
         f'{escape(title)}</text>'
     )
-    draw_grid(L, x_left, x_right, y_top, y_bot, y_max)
+    draw_grid(L, x_left, x_right, y_top, y_bot, y_max, grid_lines)
     L.append(
         f'  <line x1="{x_left}" y1="{y_bot}" x2="{x_right}" y2="{y_bot}"'
         f' stroke="#30363d" stroke-width="1.5"/>'
@@ -353,24 +356,25 @@ def draw_panel(L, title, impls, data, x_left, y_top, plot_w, plot_h):
 
 def summary_chart(results, out_path):
     tag = select_dataset_tag(results)
-    transfer_rate = 1e9
     hw_label = detect_hardware()
 
     panel_data = [
-        (level_name, impls, level_panel_data(results, tag, impls, transfer_rate))
+        (level_name, impls, level_panel_data(results, tag, impls, TRANSFER_RATE))
         for level_name, impls in LEVELS
     ]
 
     svg_w = 980
-    svg_h = 760
     x_left = 70
-    col_gap = 45
-    plot_w = 410
-    plot_h = 210
+    col_gap = 55
+    plot_w = 405
+    left_plot_h = 145
     y_top = 78 if hw_label else 64
-    row_gap = 82
-    x_cols = [x_left, x_left + plot_w + col_gap]
-    y_rows = [y_top, y_top + plot_h + row_gap]
+    row_stride = 215
+    right_plot_h = left_plot_h + 2 * row_stride
+    left_rows = [y_top + i * row_stride for i in range(3)]
+    right_x = x_left + plot_w + col_gap
+    plot_bottom = y_top + right_plot_h
+    svg_h = plot_bottom + 110
     mid_x = svg_w / 2
 
     L = []
@@ -382,7 +386,7 @@ def summary_chart(results, out_path):
     L.append(
         f'  <text x="{mid_x:.1f}" y="22" text-anchor="middle" fill="#e6edf3"'
         f' font-size="14" font-weight="700">'
-        f'misa77 Pipelines @1 GB/s by Level (lower is better)</text>'
+        f'misa77 Pipelines @{TRANSFER_LABEL} by Level (lower is better)</text>'
     )
     L.append(
         f'  <text x="{mid_x:.1f}" y="39" text-anchor="middle" fill="#7d8590"'
@@ -394,19 +398,21 @@ def summary_chart(results, out_path):
             f' font-size="10">{escape(hw_label)}</text>'
         )
 
-    for idx, (level_name, impls, data) in enumerate(panel_data):
+    for idx, (level_name, impls, data) in enumerate(panel_data[:3]):
         draw_panel(
             L,
             level_name,
             impls,
             data,
-            x_cols[idx % 2],
-            y_rows[idx // 2],
+            x_left,
+            left_rows[idx],
             plot_w,
-            plot_h,
+            left_plot_h,
         )
+    level_name, impls, data = panel_data[3]
+    draw_panel(L, level_name, impls, data, right_x, y_top, plot_w, right_plot_h, grid_lines=8)
 
-    leg_y = y_rows[1] + plot_h + 52
+    leg_y = plot_bottom + 52
     legend_items = ["C++ misa77", "m77rip", "m77rip paranoid"]
     leg_start = mid_x - 310
     for i, impl in enumerate(legend_items):
@@ -428,7 +434,7 @@ def summary_chart(results, out_path):
     )
     L.append(
         f'  <text x="{mid_x + 25:.0f}" y="{seg_y}" fill="#7d8590"'
-        f' font-size="9">dim = transfer @1 GB/s</text>'
+        f' font-size="9">dim = transfer @{TRANSFER_LABEL}</text>'
     )
 
     L.append("</svg>")

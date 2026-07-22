@@ -47,46 +47,41 @@ assert_eq!(written, size);
 
 ![Summary](https://raw.githubusercontent.com/paddor/m77rip/main/doc/charts/x86_64/summary.svg)
 
-Stacked bars show encode + transfer at 1 GB/s + decode for levels `-1`, `0`,
+Stacked bars show encode + transfer at 100 MB/s + decode for levels `-1`, `0`,
 `1`, and `2`. Each panel aggregates compressible and incompressible Silesia
 inputs. Lower is better. Benchmarks use misa77 v0.4.0, first 1 MiB per Silesia
 file, single-threaded on x86_64 (AVX2). Best of 10 rounds at 20 ms each.
 
 ### Default build
 
-| File    | Decode -0 | Decode -1 | Encode -0 | Encode -1 |
-|---------|-----------|-----------|-----------|-----------|
-| dickens |     1.01x |     1.02x |     1.03x |     1.05x |
-| mozilla |     1.01x |     1.02x |     1.00x |     0.98x |
-| mr      |     1.04x |     1.02x |     1.04x |     1.09x |
-| nci     |     1.04x |     1.03x |     1.00x |     0.97x |
-| ooffice |     1.00x |     0.99x |     1.00x |     0.97x |
-| osdb    |     0.93x |     0.94x |     1.00x |     0.96x |
-| reymont |     1.01x |     1.01x |     0.99x |     1.03x |
-| samba   |     1.01x |     1.00x |     1.00x |     0.98x |
-| sao     |     0.95x |     0.94x |     1.01x |     0.99x |
-| webster |     1.02x |     1.03x |     1.01x |     0.99x |
-| x-ray   |     1.01x |     0.98x |     0.99x |     0.96x |
-| xml     |     1.00x |     1.00x |     1.02x |     1.01x |
-| **geomean** | **1.00x** | **1.00x** | **1.01x** | **1.00x** |
+Tables report geomeans across files in each corpus class. Values in
+parentheses compare against C++ misa77. Encode/decode parentheses are speed
+ratios. Compression-ratio parentheses are ratio-vs-ratio values, so higher is
+better. Level `-1` has no C++ misa77 peer, so it compares against C++ level 0.
+
+| Level | Corpus | Encode MB/s (vs misa77) | Decode MB/s (vs misa77) | Ratio (vs misa77) |
+|-------|--------|--------------------------|--------------------------|-------------------|
+| `L-1` | Compressible | 384 (5.97x) | 3639 (0.64x) | 1.63 (0.64x) |
+| `L-1` | Incompressible | 618 (14.43x) | 4488 (0.68x) | 1.18 (0.88x) |
+| `L0` | Compressible | 122 (1.90x) | 5188 (0.91x) | 2.49 (0.98x) |
+| `L0` | Incompressible | 89.9 (2.10x) | 5939 (0.90x) | 1.27 (0.94x) |
+| `L1` | Compressible | 84.6 (1.33x) | 5545 (1.10x) | 2.64 (0.98x) |
+| `L1` | Incompressible | 40.0 (1.33x) | 3114 (1.16x) | 1.49 (0.99x) |
+| `L2` | Compressible | 20.4 (3.48x) | 4781 (0.90x) | 2.82 (0.97x) |
+| `L2` | Incompressible | 18.3 (2.79x) | 3094 (0.91x) | 1.50 (0.99x) |
 
 ### Paranoid build (`--features paranoid`, zero unsafe)
 
-| File    | Decode -0 | Decode -1 | Encode -0 | Encode -1 |
-|---------|-----------|-----------|-----------|-----------|
-| dickens |     0.29x |     0.28x |     0.63x |     0.63x |
-| mozilla |     0.38x |     0.38x |     0.56x |     0.53x |
-| mr      |     0.40x |     0.38x |     0.60x |     0.63x |
-| nci     |     0.39x |     0.38x |     0.43x |     0.41x |
-| ooffice |     0.41x |     0.38x |     0.58x |     0.56x |
-| osdb    |     0.34x |     0.34x |     0.58x |     0.56x |
-| reymont |     0.30x |     0.29x |     0.54x |     0.52x |
-| samba   |     0.35x |     0.33x |     0.54x |     0.52x |
-| sao     |     0.34x |     0.41x |     0.59x |     0.58x |
-| webster |     0.30x |     0.30x |     0.58x |     0.57x |
-| x-ray   |     0.73x |     0.47x |     0.67x |     0.63x |
-| xml     |     0.29x |     0.29x |     0.50x |     0.49x |
-| **geomean** | **0.36x** | **0.35x** | **0.56x** | **0.55x** |
+| Level | Corpus | Encode MB/s (vs misa77) | Decode MB/s (vs misa77) | Ratio (vs misa77) |
+|-------|--------|--------------------------|--------------------------|-------------------|
+| `L-1` | Compressible | 252 (3.91x) | 1309 (0.23x) | 1.66 (0.65x) |
+| `L-1` | Incompressible | 241 (5.64x) | 1410 (0.21x) | 1.20 (0.89x) |
+| `L0` | Compressible | 71.9 (1.12x) | 1724 (0.30x) | 2.49 (0.98x) |
+| `L0` | Incompressible | 60.1 (1.40x) | 2574 (0.39x) | 1.27 (0.94x) |
+| `L1` | Compressible | 45.3 (0.71x) | 1842 (0.36x) | 2.64 (0.98x) |
+| `L1` | Incompressible | 22.9 (0.77x) | 1095 (0.41x) | 1.49 (0.99x) |
+| `L2` | Compressible | 19.5 (3.32x) | 1296 (0.24x) | 2.82 (0.97x) |
+| `L2` | Incompressible | 17.1 (2.60x) | 857 (0.25x) | 1.50 (0.99x) |
 
 ## `no_std` and 32-bit support
 
