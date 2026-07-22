@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-07-22
+
 - Added explicit level `-1` speed-first encoding while keeping misa77-compatible
   streams.
 - Added misa77 v0.4 level 2 heavy-format encode/decode compatibility.
@@ -15,6 +17,8 @@ All notable changes to this project will be documented in this file.
 - Set the benchmark summary transfer segment to 100 MB/s.
 - Split level 2 into a taller side panel so slower heavy encoding does not
   dominate the other level panels.
+- Condensed README performance tables to geomeans by level and corpus class,
+  with speed and ratio comparisons against C++ misa77.
 - Kept the default encoder unsafe surface unchanged and covered the current
   release candidate with fmt, clippy, tests, Miri, Kani, ASan, and fuzz smoke
   runs.
