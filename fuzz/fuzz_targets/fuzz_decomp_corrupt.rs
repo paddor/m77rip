@@ -5,8 +5,10 @@ fuzz_target!(|data: &[u8]| {
     if data.len() < 8 {
         return;
     }
-    let original_size =
-        u64::from_le_bytes(data[..8].try_into().unwrap()) as usize;
+    let Some(original_size) = m77rip::decompressed_size(data).and_then(|n| n.try_into().ok())
+    else {
+        return;
+    };
     if original_size > 10 * 1024 * 1024 {
         return;
     }

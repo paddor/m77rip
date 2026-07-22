@@ -1,6 +1,7 @@
 use m77rip::{Error, decompress, decompress_into, decompressed_size};
 use m77rip_core::format::{
-    EXT_HEADER_SIZE, MAX_DISTANCE, MIN_MATCH_LEN, TOKEN_LIT_MAX, TOKEN_MATCH_BITS,
+    EXT_HEADER_SIZE, FLAG_HEAVY, FLAG_HEAVY_COND, FLAG_SHIFT, HEAVY_LITERAL_SUFFIX, MAX_DISTANCE,
+    MIN_MATCH_LEN, TOKEN_LIT_MAX, TOKEN_MATCH_BITS,
 };
 
 fn push_literal_extension(out: &mut Vec<u8>, literal_len: usize) {
@@ -12,10 +13,22 @@ fn push_literal_extension(out: &mut Vec<u8>, literal_len: usize) {
     out.push(remaining as u8);
 }
 
+fn heavy_header(size: usize, flags: u8) -> [u8; 8] {
+    ((size as u64) | ((flags as u64) << FLAG_SHIFT)).to_le_bytes()
+}
+
+fn heavy_token(lit_len: usize, match_code: usize, distance_delta: u32) -> [u8; 4] {
+    let token = ((lit_len as u32) << 26) | ((match_code as u32) << 20) | distance_delta;
+    token.to_le_bytes()
+}
+
 #[test]
 fn decompressed_size_valid() {
     let mut data = vec![0u8; 16];
     data[..8].copy_from_slice(&42u64.to_le_bytes());
+    assert_eq!(decompressed_size(&data), Some(42));
+
+    data[..8].copy_from_slice(&heavy_header(42, FLAG_HEAVY | FLAG_HEAVY_COND));
     assert_eq!(decompressed_size(&data), Some(42));
 }
 
@@ -65,6 +78,15 @@ fn decompress_small_raw() {
 fn decompress_small_boundary() {
     let data = vec![0xFF; 32];
     let mut compressed = (data.len() as u64).to_le_bytes().to_vec();
+    compressed.extend_from_slice(&data);
+    let result = decompress(&compressed, data.len()).unwrap();
+    assert_eq!(result, data);
+}
+
+#[test]
+fn decompress_heavy_small_raw() {
+    let data = vec![0xA5; 64];
+    let mut compressed = heavy_header(data.len(), FLAG_HEAVY).to_vec();
     compressed.extend_from_slice(&data);
     let result = decompress(&compressed, data.len()).unwrap();
     assert_eq!(result, data);
@@ -162,6 +184,85 @@ fn decompress_handcrafted_one_sequence() {
 
     let result = decompress(&compressed, 69).unwrap();
     assert_eq!(result, original);
+}
+
+#[test]
+fn decompress_heavy_handcrafted_one_sequence() {
+    let literal_len = 33usize;
+    let match_len = 4usize;
+    let original_size = literal_len + match_len + HEAVY_LITERAL_SUFFIX;
+
+    let mut original = vec![0u8; original_size];
+    for (i, byte) in original.iter_mut().enumerate().take(literal_len) {
+        *byte = (i as u8).wrapping_add(0x20);
+    }
+    original[literal_len..literal_len + match_len].copy_from_slice(&[0x20, 0x21, 0x22, 0x23]);
+    for (i, byte) in original[literal_len + match_len..].iter_mut().enumerate() {
+        *byte = (i as u8).wrapping_mul(3).wrapping_add(7);
+    }
+
+    let mut compressed = Vec::new();
+    compressed.extend_from_slice(&heavy_header(original_size, FLAG_HEAVY));
+    compressed.extend_from_slice(&(HEAVY_LITERAL_SUFFIX as u64).to_le_bytes());
+    compressed.extend_from_slice(&heavy_token(literal_len, 1, 0));
+    compressed.extend_from_slice(&original[..literal_len]);
+    compressed.extend_from_slice(&original[literal_len + match_len..]);
+
+    let result = decompress(&compressed, original_size).unwrap();
+    assert_eq!(result, original);
+}
+
+#[test]
+fn decompress_heavy_rejects_short_suffix() {
+    let original_size = 100usize;
+    let mut compressed = Vec::new();
+    compressed.extend_from_slice(&heavy_header(original_size, FLAG_HEAVY));
+    compressed.extend_from_slice(&32u64.to_le_bytes());
+    compressed.extend(std::iter::repeat_n(0u8, 32));
+
+    let err = decompress(&compressed, original_size).unwrap_err();
+    assert_eq!(err, Error::CorruptInput);
+}
+
+#[test]
+fn decompress_heavy_rejects_zero_match_code() {
+    let original_size = 33 + 4 + HEAVY_LITERAL_SUFFIX;
+    let mut compressed = Vec::new();
+    compressed.extend_from_slice(&heavy_header(original_size, FLAG_HEAVY));
+    compressed.extend_from_slice(&(HEAVY_LITERAL_SUFFIX as u64).to_le_bytes());
+    compressed.extend_from_slice(&heavy_token(33, 0, 0));
+    compressed.extend(std::iter::repeat_n(0x11, 33));
+    compressed.extend(std::iter::repeat_n(0x22, HEAVY_LITERAL_SUFFIX));
+
+    let err = decompress(&compressed, original_size).unwrap_err();
+    assert_eq!(err, Error::CorruptInput);
+}
+
+#[test]
+fn decompress_heavy_rejects_match_before_output() {
+    let original_size = 1 + 4 + HEAVY_LITERAL_SUFFIX;
+    let mut compressed = Vec::new();
+    compressed.extend_from_slice(&heavy_header(original_size, FLAG_HEAVY));
+    compressed.extend_from_slice(&(HEAVY_LITERAL_SUFFIX as u64).to_le_bytes());
+    compressed.extend_from_slice(&heavy_token(1, 1, 0));
+    compressed.push(0x11);
+    compressed.extend(std::iter::repeat_n(0x22, HEAVY_LITERAL_SUFFIX));
+
+    let err = decompress(&compressed, original_size).unwrap_err();
+    assert_eq!(err, Error::CorruptInput);
+}
+
+#[test]
+fn decompress_heavy_rejects_literal_stream_overrun() {
+    let original_size = 40 + 4 + HEAVY_LITERAL_SUFFIX;
+    let mut compressed = Vec::new();
+    compressed.extend_from_slice(&heavy_header(original_size, FLAG_HEAVY));
+    compressed.extend_from_slice(&(HEAVY_LITERAL_SUFFIX as u64).to_le_bytes());
+    compressed.extend_from_slice(&heavy_token(40, 1, 0));
+    compressed.extend(std::iter::repeat_n(0x22, HEAVY_LITERAL_SUFFIX));
+
+    let err = decompress(&compressed, original_size).unwrap_err();
+    assert_eq!(err, Error::CorruptInput);
 }
 
 #[test]

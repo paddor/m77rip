@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate decompression benchmark SVGs from cached results.
+"""Generate benchmark SVGs from cached results.
 
 Results are read from ~/.cache/m77rip/<arch>/ (written by m77rip_bench).
 
@@ -13,32 +13,62 @@ import sys
 from pathlib import Path
 
 
-# The 4 implementations we chart (level 0 only).
+# Level 0 pipelines. m77rip records encode-only and decode-only benchmark rows,
+# so each chart bar is composed from the matching rows below.
 CODEC_ORDER = [
     "C++ misa77 -0",
     "C++ misa77 safe -0",
-    "m77rip (from -0)",
-    "m77rip paranoid (from -0)",
+    "m77rip -0",
+    "m77rip paranoid -0",
 ]
 
 COLORS = {
-    "C++ misa77 -0":              "#60a5fa",   # blue
-    "C++ misa77 safe -0":         "#93c5fd",   # light blue
-    "m77rip (from -0)":           "#f87171",   # lz4rip red
-    "m77rip paranoid (from -0)":  "#f472b6",   # lz4rip purple
+    "C++ misa77 -0":             ("#60a5fa", "#4680c4"),  # blue
+    "C++ misa77 safe -0":        ("#93c5fd", "#688eb8"),  # light blue
+    "m77rip -0":                 ("#f87171", "#c45050"),  # lz4rip red
+    "m77rip paranoid -0":        ("#f472b6", "#c05a92"),  # lz4rip pink
 }
 
 LABELS = {
-    "C++ misa77 -0":              "C++ misa77 (unsafe)",
-    "C++ misa77 safe -0":         "C++ misa77 (safe)",
-    "m77rip (from -0)":           "m77rip (encapsulated unsafe)",
-    "m77rip paranoid (from -0)":  "m77rip (paranoid)",
+    "C++ misa77 -0":             "C++ misa77 (unsafe decode)",
+    "C++ misa77 safe -0":        "C++ misa77 (safe decode)",
+    "m77rip -0":                 "m77rip (encapsulated unsafe)",
+    "m77rip paranoid -0":        "m77rip (paranoid decode)",
+}
+
+PIPELINES = {
+    "C++ misa77 -0": (
+        "C++ misa77 -0",
+        "C++ misa77 -0",
+        "C++ misa77 -0",
+    ),
+    "C++ misa77 safe -0": (
+        "C++ misa77 -0",
+        "C++ misa77 -0",
+        "C++ misa77 safe -0",
+    ),
+    "m77rip -0": (
+        "m77rip compress -0",
+        "m77rip compress -0",
+        "m77rip (from -0)",
+    ),
+    "m77rip paranoid -0": (
+        "m77rip paranoid compress -0",
+        "m77rip paranoid compress -0",
+        "m77rip paranoid (from -0)",
+    ),
 }
 
 ALL_INPUTS = [
     "dickens", "mozilla", "mr", "nci", "ooffice", "osdb",
     "reymont", "samba", "sao", "webster", "x-ray", "xml",
 ]
+
+COMPRESSIBLE = {
+    "dickens", "mozilla", "nci", "ooffice", "osdb",
+    "reymont", "samba", "webster", "xml",
+}
+INCOMPRESSIBLE = {"mr", "sao", "x-ray"}
 
 
 def human_size(n):
@@ -120,39 +150,95 @@ def geomean(values):
     return product ** (1.0 / len(values))
 
 
+def find_result(results, inp, codec):
+    return next((r for r in results if r["input"] == inp and r["codec"] == codec), None)
+
+
+def pipeline_parts(results, inp, codec):
+    compress_codec, transfer_codec, decode_codec = PIPELINES[codec]
+    comp_r = find_result(results, inp, compress_codec)
+    transfer_r = find_result(results, inp, transfer_codec)
+    decomp_r = find_result(results, inp, decode_codec)
+    if not comp_r or not transfer_r or not decomp_r:
+        return None
+    if comp_r["compress_ns"] <= 0 or decomp_r["decompress_ns"] <= 0:
+        return None
+    return comp_r, transfer_r, decomp_r
+
+
+def pipeline_codecs(results):
+    return [
+        c for c in CODEC_ORDER
+        if any(pipeline_parts(results, inp, c) for inp in ALL_INPUTS)
+    ]
+
+
+def pipeline_stack(results, inp, codec, transfer_rate=1e9):
+    parts = pipeline_parts(results, inp, codec)
+    if not parts:
+        return None
+    comp_r, transfer_r, decomp_r = parts
+    per_gb = 1e9 / comp_r["input_size"]
+    comp = comp_r["compress_ns"] / 1e9 * per_gb
+    transfer = (transfer_r["compressed_size"] / comp_r["input_size"]) * (1e9 / transfer_rate)
+    decomp = decomp_r["decompress_ns"] / 1e9 * per_gb
+    return comp, transfer, decomp
+
+
 def summary_chart(results, out_path):
-    """One bar per implementation, aggregated (geometric mean MB/s) across files."""
-    codecs = [c for c in CODEC_ORDER if any(r["codec"] == c for r in results)]
-
+    """Aggregate pipeline time per corpus class, lower is better."""
+    codecs = pipeline_codecs(results)
+    n_codecs = len(codecs)
     hw_label = detect_hardware()
+    transfer_rate = 1e9
 
-    # Compute geometric mean MB/s per codec
-    codec_mbps = {}
-    for codec in codecs:
-        values = []
-        for inp in ALL_INPUTS:
-            r = next((r for r in results
-                      if r["input"] == inp and r["codec"] == codec
-                      and r["decompress_ns"] > 0), None)
-            if r:
-                values.append(r["input_size"] / r["decompress_ns"] * 1000.0)
-        codec_mbps[codec] = geomean(values)
+    groups = [
+        ("Compressible", COMPRESSIBLE),
+        ("Incompressible", INCOMPRESSIBLE),
+    ]
 
-    y_max = max(codec_mbps.values()) * 1.15
+    group_data = {}
+    for group_name, file_set in groups:
+        for codec in codecs:
+            total_input = 0
+            total_compressed = 0
+            total_compress_ns = 0
+            total_decompress_ns = 0
+            for inp in ALL_INPUTS:
+                if inp not in file_set:
+                    continue
+                parts = pipeline_parts(results, inp, codec)
+                if not parts:
+                    continue
+                comp_r, transfer_r, decomp_r = parts
+                total_input += comp_r["input_size"]
+                total_compressed += transfer_r["compressed_size"]
+                total_compress_ns += comp_r["compress_ns"]
+                total_decompress_ns += decomp_r["decompress_ns"]
+            if total_input > 0:
+                per_gb = 1e9 / total_input
+                comp = total_compress_ns / 1e9 * per_gb
+                transfer = (total_compressed / total_input) * (1e9 / transfer_rate)
+                decomp = total_decompress_ns / 1e9 * per_gb
+                group_data[(group_name, codec)] = (comp, transfer, decomp)
 
     svg_w = 850
-    svg_h = 340
+    svg_h = 460
     x_left, x_right = 70, 830
     plot_w = x_right - x_left
-    top_margin = 50 if hw_label else 40
-    p_top = top_margin
-    p_bot = svg_h - 80
+    y_top = 55 if hw_label else 45
+    y_bot = 310
+    plot_h = y_bot - y_top
+
+    y_max = 0
+    for v in group_data.values():
+        y_max = max(y_max, sum(v))
+    y_max *= 1.15
+
+    def y(v):
+        return y_bot - (v / y_max) * plot_h
 
     mid_x = (x_left + x_right) / 2
-    n_codecs = len(codecs)
-    bar_w = min(90, plot_w / n_codecs * 0.65)
-    total_bars_w = n_codecs * bar_w + (n_codecs - 1) * bar_w * 0.4
-    bar_start = mid_x - total_bars_w / 2
 
     L = []
     L.append(
@@ -164,7 +250,7 @@ def summary_chart(results, out_path):
     L.append(
         f'  <text x="{mid_x}" y="22" text-anchor="middle" fill="#e6edf3"'
         f' font-size="14" font-weight="700">'
-        f'Decompression Throughput (Silesia geomean)'
+        f'misa77 Level 0 Pipeline @1 GB/s: Aggregate across corpus (lower is better)'
         f'</text>'
     )
     if hw_label:
@@ -172,9 +258,6 @@ def summary_chart(results, out_path):
             f'  <text x="{mid_x}" y="38" text-anchor="middle" fill="#7d8590"'
             f' font-size="10">{hw_label}</text>'
         )
-
-    def y(v):
-        return p_bot - (v / y_max) * (p_bot - p_top)
 
     # y gridlines
     step = nice_step(y_max, 5)
@@ -188,59 +271,102 @@ def summary_chart(results, out_path):
         L.append(
             f'  <text x="{x_left - 8}" y="{yy:.1f}" text-anchor="end"'
             f' dominant-baseline="middle" fill="#7d8590" font-size="10">'
-            f'{int(v)}</text>'
+            f'{v:.0f}</text>'
         )
         v += step
 
     # baseline
     L.append(
-        f'  <line x1="{x_left}" y1="{p_bot}" x2="{x_right}" y2="{p_bot}"'
+        f'  <line x1="{x_left}" y1="{y_bot}" x2="{x_right}" y2="{y_bot}"'
         f' stroke="#30363d" stroke-width="1.5"/>'
     )
 
     # y-axis label
-    label_y = (p_top + p_bot) / 2
+    label_y = (y_top + y_bot) / 2
     L.append(
-        f'  <text x="18" y="{label_y}" text-anchor="middle" fill="#e6edf3"'
+        f'  <text x="22" y="{label_y}" text-anchor="middle" fill="#e6edf3"'
         f' font-size="11" font-weight="600"'
-        f' transform="rotate(-90,18,{label_y})">MB/s</text>'
+        f' transform="rotate(-90,22,{label_y})">seconds / GB</text>'
     )
 
-    # bars
-    for ci, codec in enumerate(codecs):
-        val = codec_mbps[codec]
-        color = COLORS[codec]
-        bx = bar_start + ci * (bar_w * 1.4)
-        h = (val / y_max) * (p_bot - p_top)
+    # bars: 2 groups, n_codecs bars each, with gap between groups
+    n_groups = len(groups)
+    group_w = plot_w / n_groups
+    bar_w = min(group_w * 0.7 / n_codecs, 50)
+    inner_gap = bar_w * 0.15
+    group_gap = group_w * 0.2
+
+    for gi, (group_name, _) in enumerate(groups):
+        group_x = x_left + gi * group_w + group_gap / 2
+
+        for ci, codec in enumerate(codecs):
+            if (group_name, codec) not in group_data:
+                continue
+            comp, transfer, decomp = group_data[(group_name, codec)]
+            main_c, xfer_c = COLORS[codec]
+
+            bx = group_x + ci * (bar_w + inner_gap / n_codecs)
+            h_comp = (comp / y_max) * plot_h
+            L.append(
+                f'  <rect x="{bx:.1f}" y="{y(comp):.1f}"'
+                f' width="{bar_w:.1f}" height="{h_comp:.1f}"'
+                f' fill="{main_c}" rx="1"/>'
+            )
+            h_transfer = (transfer / y_max) * plot_h
+            L.append(
+                f'  <rect x="{bx:.1f}" y="{y(comp + transfer):.1f}"'
+                f' width="{bar_w:.1f}" height="{h_transfer:.1f}"'
+                f' fill="{xfer_c}" rx="1"/>'
+            )
+            h_decomp = (decomp / y_max) * plot_h
+            L.append(
+                f'  <rect x="{bx:.1f}" y="{y(comp + transfer + decomp):.1f}"'
+                f' width="{bar_w:.1f}" height="{h_decomp:.1f}"'
+                f' fill="{main_c}" rx="1"/>'
+            )
+
+        # group label
+        cx = group_x + (n_codecs * (bar_w + inner_gap / n_codecs)) / 2
         L.append(
-            f'  <rect x="{bx:.1f}" y="{y(val):.1f}"'
-            f' width="{bar_w:.1f}" height="{h:.1f}"'
-            f' fill="{color}" rx="2"/>'
-        )
-        # value label on top of bar
-        L.append(
-            f'  <text x="{bx + bar_w / 2:.1f}" y="{y(val) - 6:.1f}"'
-            f' text-anchor="middle" fill="#e6edf3" font-size="10"'
-            f' font-weight="600">{int(val)}</text>'
+            f'  <text x="{cx:.1f}" y="{y_bot + 18}" text-anchor="middle"'
+            f' fill="#e6edf3" font-size="11" font-weight="600">{group_name}</text>'
         )
 
     # legend
-    leg_y = svg_h - 25
+    leg_y = y_bot + 40
     legend_items = [(k, LABELS[k]) for k in codecs if k in COLORS]
-    col_w = 200
-    total_leg_w = len(legend_items) * col_w
-    leg_start_x = mid_x - total_leg_w / 2
+    row_h = 18
+    left_count = (len(legend_items) + 1) // 2
+    leg_positions = [(0, r) for r in range(left_count)] + [
+        (1, r) for r in range(len(legend_items) - left_count)
+    ]
+    leg_col_x = [mid_x - 200, mid_x + 10]
     for i, (key, label) in enumerate(legend_items):
-        color = COLORS[key]
-        lx = leg_start_x + i * col_w
-        ly = leg_y
+        col, row = leg_positions[i]
+        lx = leg_col_x[col]
+        ly = leg_y + row * row_h
+        main_c, _ = COLORS[key]
         L.append(
-            f'  <rect x="{lx:.0f}" y="{ly - 9}" width="12" height="12"'
-            f' fill="{color}" rx="2"/>'
+            f'  <rect x="{lx:.0f}" y="{ly - 5}" width="12" height="12"'
+            f' fill="{main_c}" rx="2"/>'
         )
         L.append(
-            f'  <text x="{lx + 18:.0f}" y="{ly}" fill="#e6edf3"'
+            f'  <text x="{lx + 18:.0f}" y="{ly + 5}" fill="#e6edf3"'
             f' font-size="10" font-weight="500">{label}</text>'
+        )
+
+    seg_y = leg_y + left_count * row_h + 8
+    seg_items = [
+        ("bright = compress + decompress", "#e6edf3"),
+        ("dim = transfer @1 GB/s", "#7d8590"),
+    ]
+    seg_total = 420
+    seg_start = mid_x - seg_total / 2
+    for i, (label, fill) in enumerate(seg_items):
+        sx = seg_start + i * 240
+        L.append(
+            f'  <text x="{sx:.0f}" y="{seg_y + 4}" fill="{fill}"'
+            f' font-size="9">{label}</text>'
         )
 
     L.append('</svg>')
@@ -251,10 +377,10 @@ def summary_chart(results, out_path):
 
 
 def pipeline_chart(results, out_path):
-    """Per-file decompression throughput, one bar per impl per file, two panels."""
-    codecs = [c for c in CODEC_ORDER if any(r["codec"] == c for r in results)]
+    """Per-file pipeline time, one stacked bar per impl per file."""
+    codecs = pipeline_codecs(results)
     inputs = [i for i in ALL_INPUTS
-              if any(r["input"] == i and r["codec"] in set(codecs) for r in results)]
+              if any(pipeline_parts(results, i, c) for c in codecs)]
     n_codecs = len(codecs)
 
     mid = (len(inputs) + 1) // 2
@@ -270,23 +396,21 @@ def pipeline_chart(results, out_path):
     top_margin = 50 if hw_label else 40
 
     panel_tops = [top_margin, top_margin + panel_h + panel_gap]
-    svg_h = panel_tops[-1] + panel_h + 100
+    svg_h = panel_tops[-1] + panel_h + 120
 
-    # compute MB/s
-    mbps = {}
+    # compute stacked values: compress + transfer + decompress (seconds per GB)
+    transfer_rate = 1e9
+    stacks = {}
     y_max = 0
     for inp in inputs:
         for codec in codecs:
-            r = next((r for r in results
-                      if r["input"] == inp and r["codec"] == codec
-                      and r["decompress_ns"] > 0), None)
-            if not r:
+            stack = pipeline_stack(results, inp, codec, transfer_rate)
+            if not stack:
                 continue
-            val = r["input_size"] / r["decompress_ns"] * 1000.0
-            mbps[(inp, codec)] = val
-            y_max = max(y_max, val)
+            stacks[(inp, codec)] = stack
+            y_max = max(y_max, sum(stack))
 
-    y_max *= 1.12
+    y_max *= 1.1
 
     mid_x = (x_left + x_right) / 2
     L = []
@@ -299,7 +423,7 @@ def pipeline_chart(results, out_path):
     L.append(
         f'  <text x="{mid_x}" y="22" text-anchor="middle" fill="#e6edf3"'
         f' font-size="14" font-weight="700">'
-        f'Decompression: Per-File Throughput (higher is better)'
+        f'misa77 Level 0: Compress + Transfer @1 GB/s + Decompress (lower is better)'
         f'</text>'
     )
     if hw_label:
@@ -329,12 +453,11 @@ def pipeline_chart(results, out_path):
                 f'  <line x1="{x_left}" y1="{yy:.1f}" x2="{x_right}" y2="{yy:.1f}"'
                 f' stroke="#21262d" stroke-width="1"/>'
             )
-            if pi == 0:
-                L.append(
-                    f'  <text x="{x_left - 8}" y="{yy:.1f}" text-anchor="end"'
-                    f' dominant-baseline="middle" fill="#7d8590" font-size="10">'
-                    f'{int(v)}</text>'
-                )
+            L.append(
+                f'  <text x="{x_left - 8}" y="{yy:.1f}" text-anchor="end"'
+                f' dominant-baseline="middle" fill="#7d8590" font-size="10">'
+                f'{v:.0f}</text>'
+            )
             v += step
 
         # baseline
@@ -347,9 +470,9 @@ def pipeline_chart(results, out_path):
         if pi == 0:
             total_mid_y = (panel_tops[0] + panel_tops[1] + panel_h) / 2
             L.append(
-                f'  <text x="18" y="{total_mid_y}" text-anchor="middle" fill="#e6edf3"'
+                f'  <text x="22" y="{total_mid_y}" text-anchor="middle" fill="#e6edf3"'
                 f' font-size="11" font-weight="600"'
-                f' transform="rotate(-90,18,{total_mid_y})">MB/s</text>'
+                f' transform="rotate(-90,22,{total_mid_y})">seconds / GB</text>'
             )
 
         # bars
@@ -357,17 +480,29 @@ def pipeline_chart(results, out_path):
             group_x = x_left + gi * group_w + gap / 2
 
             for ci, codec in enumerate(codecs):
-                if (inp, codec) not in mbps:
+                if (inp, codec) not in stacks:
                     continue
-                val = mbps[(inp, codec)]
-                color = COLORS[codec]
+                comp, transfer, decomp = stacks[(inp, codec)]
+                main_c, xfer_c = COLORS[codec]
 
                 bx = group_x + ci * bar_w
-                h = (val / y_max) * (p_bot - p_top)
+                h_comp = (comp / y_max) * (p_bot - p_top)
                 L.append(
-                    f'  <rect x="{bx:.1f}" y="{y(val):.1f}"'
-                    f' width="{bar_w:.1f}" height="{h:.1f}"'
-                    f' fill="{color}" rx="1"/>'
+                    f'  <rect x="{bx:.1f}" y="{y(comp):.1f}"'
+                    f' width="{bar_w:.1f}" height="{h_comp:.1f}"'
+                    f' fill="{main_c}" rx="1"/>'
+                )
+                h_transfer = (transfer / y_max) * (p_bot - p_top)
+                L.append(
+                    f'  <rect x="{bx:.1f}" y="{y(comp + transfer):.1f}"'
+                    f' width="{bar_w:.1f}" height="{h_transfer:.1f}"'
+                    f' fill="{xfer_c}" rx="1"/>'
+                )
+                h_decomp = (decomp / y_max) * (p_bot - p_top)
+                L.append(
+                    f'  <rect x="{bx:.1f}" y="{y(comp + transfer + decomp):.1f}"'
+                    f' width="{bar_w:.1f}" height="{h_decomp:.1f}"'
+                    f' fill="{main_c}" rx="1"/>'
                 )
 
             # group label
@@ -386,20 +521,38 @@ def pipeline_chart(results, out_path):
     # legend
     leg_y = panel_tops[-1] + panel_h + 50
     legend_items = [(k, LABELS[k]) for k in codecs if k in COLORS]
-    col_w = 200
-    total_leg_w = len(legend_items) * col_w
-    leg_start_x = mid_x - total_leg_w / 2
+    row_h = 18
+    left_count = (len(legend_items) + 1) // 2
+    leg_positions = [(0, r) for r in range(left_count)] + [
+        (1, r) for r in range(len(legend_items) - left_count)
+    ]
+    leg_col_x = [mid_x - 200, mid_x + 10]
     for i, (key, label) in enumerate(legend_items):
-        color = COLORS[key]
-        lx = leg_start_x + i * col_w
-        ly = leg_y
+        col, row = leg_positions[i]
+        lx = leg_col_x[col]
+        ly = leg_y + row * row_h
+        main_c, _ = COLORS[key]
         L.append(
-            f'  <rect x="{lx:.0f}" y="{ly - 9}" width="12" height="12"'
-            f' fill="{color}" rx="2"/>'
+            f'  <rect x="{lx:.0f}" y="{ly - 5}" width="12" height="12"'
+            f' fill="{main_c}" rx="2"/>'
         )
         L.append(
-            f'  <text x="{lx + 18:.0f}" y="{ly}" fill="#e6edf3"'
+            f'  <text x="{lx + 18:.0f}" y="{ly + 5}" fill="#e6edf3"'
             f' font-size="10" font-weight="500">{label}</text>'
+        )
+
+    seg_y = leg_y + left_count * row_h + 8
+    seg_items = [
+        ("bright = compress + decompress", "#e6edf3"),
+        ("dim = transfer @1 GB/s", "#7d8590"),
+    ]
+    seg_total = 420
+    seg_start = mid_x - seg_total / 2
+    for i, (label, fill) in enumerate(seg_items):
+        sx = seg_start + i * 240
+        L.append(
+            f'  <text x="{sx:.0f}" y="{seg_y + 4}" fill="{fill}"'
+            f' font-size="9">{label}</text>'
         )
 
     L.append('</svg>')
