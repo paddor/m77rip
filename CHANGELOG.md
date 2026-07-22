@@ -12,6 +12,9 @@ All notable changes to this project will be documented in this file.
   the current default-build encoder speed targets.
 - Updated the benchmark summary chart to show level `-1`, `0`, `1`, and `2`
   aggregate pipelines across compressible and incompressible inputs.
+- Set the benchmark summary transfer segment to 100 MB/s.
+- Split level 2 into a taller side panel so slower heavy encoding does not
+  dominate the other level panels.
 - Kept the default encoder unsafe surface unchanged and covered the current
   release candidate with fmt, clippy, tests, Miri, Kani, ASan, and fuzz smoke
   runs.
