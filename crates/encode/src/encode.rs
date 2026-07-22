@@ -14,17 +14,17 @@ const LATEST_BATCH: usize = 176;
 const LATEST_INSERTS_PER_BATCH: usize = 8;
 const RING_BATCH: usize = 8;
 const LOOSE_RING_WIDTH: usize = 7;
-const DEFAULT_RING_WIDTH: usize = 13;
+const DEFAULT_RING_WIDTH: usize = 11;
 const CHAIN_AFTER: usize = 8;
 const SKIP_SHIFT: usize = 6;
 #[cfg(not(feature = "paranoid"))]
-const SPEED_SKIP_SHIFT: usize = 3;
+const SPEED_SKIP_SHIFT: usize = 2;
 const HEAVY_HASH_BITS: u32 = 21;
 const HEAVY_HASH_SIZE: usize = 1 << HEAVY_HASH_BITS;
 const HEAVY_RING_SIZE: usize = 1 << (HEAVY_WIN_BITS + 1);
 const HEAVY_RING_MASK: usize = HEAVY_RING_SIZE - 1;
 const HEAVY_NIL: u32 = u32::MAX;
-const HEAVY_MAX_CHAIN: usize = 512;
+const HEAVY_MAX_CHAIN: usize = 288;
 const HEAVY_NICE_LEN: usize = HEAVY_MAX_MATCH_LEN;
 const HEAVY_ACCEPT_LEN: usize = 5;
 const HEAVY_LAZY_MAX_STEPS: usize = 1;
@@ -717,9 +717,6 @@ fn find_ring_match_default<S: Simd>(
     probe!(8);
     probe!(9);
     probe!(10);
-    probe!(11);
-    probe!(12);
-
     (match_len, lst)
 }
 
@@ -1401,6 +1398,7 @@ fn loose_compress(src: &[u8], dst: &mut [u8]) -> usize {
 fn loose_compress_impl<S: Simd>(simd: S, src: &[u8], dst: &mut [u8]) -> usize {
     const ACCEPT_LEN: usize = 7;
     const FIRE_AT: usize = 4;
+    const MISS_SKIP_SHIFT: usize = 5;
 
     let src_size = src.len();
 
@@ -1462,7 +1460,7 @@ fn loose_compress_impl<S: Simd>(simd: S, src: &[u8], dst: &mut [u8]) -> usize {
         }
 
         if !accept {
-            pos += 1 + (miss_run >> SKIP_SHIFT);
+            pos += 1 + (miss_run >> MISS_SKIP_SHIFT);
             miss_run += 1;
             continue;
         }
@@ -1532,6 +1530,7 @@ fn loose_compress_impl<S: Simd>(simd: S, src: &[u8], dst: &mut [u8]) -> usize {
 fn loose_compress_impl(src: &[u8], dst: &mut [u8]) -> usize {
     const ACCEPT_LEN: usize = 7;
     const FIRE_AT: usize = 4;
+    const MISS_SKIP_SHIFT: usize = 5;
 
     let src_size = src.len();
 
@@ -1593,7 +1592,7 @@ fn loose_compress_impl(src: &[u8], dst: &mut [u8]) -> usize {
         }
 
         if !accept {
-            pos += 1 + (miss_run >> SKIP_SHIFT);
+            pos += 1 + (miss_run >> MISS_SKIP_SHIFT);
             miss_run += 1;
             continue;
         }
