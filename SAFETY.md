@@ -12,6 +12,18 @@ must produce compatible streams and decoded output.
 Check the unsafe path with:
 
 ```sh
+cargo fmt --all
+cargo clippy --workspace --all-targets --features c-reference -- -D warnings
+cargo clippy --workspace --all-targets --features c-reference,paranoid -- -D warnings
+cargo test --workspace --features c-reference
+cargo test --workspace --features c-reference,paranoid
 cargo +nightly miri test --workspace --lib --tests
-cargo test --workspace --all-targets --features paranoid
+cargo kani --workspace
+cargo +nightly fuzz run fuzz_roundtrip -- -max_total_time=60
+cargo +nightly fuzz run fuzz_decomp_corrupt -- -max_total_time=60
+cargo +nightly fuzz run fuzz_cpp_compress -- -max_total_time=60
+ASAN_OPTIONS=detect_leaks=1:halt_on_error=1 \
+RUSTFLAGS='-Zsanitizer=address' \
+cargo +nightly test -Zbuild-std --target x86_64-unknown-linux-gnu \
+  --workspace --features c-reference --tests
 ```

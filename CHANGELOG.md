@@ -4,8 +4,15 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+- Added explicit level `-1` speed-first encoding while keeping misa77-compatible
+  streams.
 - Added misa77 v0.4 level 2 heavy-format encode/decode compatibility.
 - Added level-specific compression bounds through `compress_bound_level`.
+- Reworked level 0, 1, and 2 parser constants to recover ratio while hitting
+  the current default-build encoder speed targets.
+- Kept the default encoder unsafe surface unchanged and covered the current
+  release candidate with fmt, clippy, tests, Miri, Kani, ASan, and fuzz smoke
+  runs.
 
 ## [0.1.2] - 2026-07-19
 
