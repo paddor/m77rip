@@ -18,6 +18,7 @@ const HEAVY_DECODE_LITERAL_COPY: usize = 16;
 #[cfg(not(feature = "paranoid"))]
 const HEAVY_FAST_INLINE_LIT_MAX: usize = HEAVY_TOKEN_LIT_MAX - 1;
 #[cfg(not(feature = "paranoid"))]
+#[cfg(any(target_arch = "x86_64", kani))]
 const HEAVY_FAST_SOURCE_GAP: usize = 4 + HEAVY_FAST_INLINE_LIT_MAX;
 #[cfg(not(feature = "paranoid"))]
 const HEAVY_FAST_OUTPUT_GAP: usize = HEAVY_FAST_INLINE_LIT_MAX + HEAVY_MAX_MATCH_LEN;
