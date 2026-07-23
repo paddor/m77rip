@@ -4,6 +4,19 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.1.4] - 2026-07-23
+
+- Optimized misa77-compatible encoder hot paths without changing encoded sizes
+  for the benchmarked level 0, 1, and 2 streams.
+- Improved default-build 1 MiB Silesia encoder geomeans to about 113 MB/s at
+  level 0, 74 MB/s at level 1, and 21 MB/s at level 2.
+- Improved paranoid-build 1 MiB Silesia encoder geomeans to about 70 MB/s at
+  level 0, 42 MB/s at level 1, and 20 MB/s at level 2.
+- Kept unsafe encapsulation unchanged; the speedups come from safe loop-shape
+  changes, bounded heavy-chain insertion, and parser control-flow cleanup.
+- Refreshed the benchmark summary chart from a fresh default and paranoid
+  1 MiB Silesia run.
+
 ## [0.1.3] - 2026-07-22
 
 - Added explicit level `-1` speed-first encoding while keeping misa77-compatible
