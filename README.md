@@ -49,7 +49,7 @@ assert_eq!(written, size);
 
 Stacked bars show encode + transfer at 100 MB/s + decode for levels `-1`, `0`,
 `1`, and `2`. Each panel aggregates compressible and incompressible Silesia
-inputs. Lower is better. Benchmarks use misa77 v0.4.0, first 1 MiB per Silesia
+inputs. Lower is better. Benchmarks use the first 1 MiB from each Silesia
 file, single-threaded on x86_64 (AVX2). Best of 10 rounds at 20 ms each.
 
 ### Default build
