@@ -1,10 +1,12 @@
 .DS_Store
 __pycache__/
 /target
+/bench/target
 Cargo.lock
 Session.vim
 /info/
 /corpus/*
+.chart_hw
 /tmp/
 /fuzz/corpus/
 /fuzz/artifacts/

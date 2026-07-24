@@ -468,6 +468,8 @@ const ALL_FILES: &[&str] = &[
     "corpus/silesia/xml",
 ];
 
+const DEFAULT_MAX_BYTES: usize = 1024 * 1024;
+
 #[cfg(not(feature = "paranoid"))]
 const M77RIP_COMPRESS_SPEED: &str = "m77rip compress L-1";
 #[cfg(not(feature = "paranoid"))]
@@ -523,12 +525,13 @@ fn main() {
     let args: Vec<String> = std::env::args().collect();
     let mut only: Vec<String> = Vec::new();
     let mut file_filter: Vec<String> = Vec::new();
-    let mut max_bytes: Option<usize> = None;
+    let mut max_bytes: Option<usize> = Some(DEFAULT_MAX_BYTES);
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
             "--help" | "-h" => {
                 println!("usage: m77rip_bench [--impl TEXT] [--files a,b] [--max-bytes N|1MiB|1M]");
+                println!("default: --max-bytes 1MiB");
                 return;
             }
             "--impl" => {
