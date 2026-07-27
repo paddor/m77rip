@@ -295,6 +295,48 @@ fn m77rip_decompresses_cpp_l2_output() {
     }
 }
 
+#[test]
+#[cfg(feature = "c-reference")]
+#[cfg_attr(miri, ignore)]
+fn m77rip_level2_matches_cpp_output_for_samples() {
+    let mut repeated = Vec::new();
+    while repeated.len() < 100_000 {
+        repeated.extend_from_slice(b"the quick brown fox jumps over the lazy dog; test payload\n");
+    }
+    repeated.truncate(100_000);
+
+    let cases: Vec<Vec<u8>> = vec![
+        b"".to_vec(),
+        b"small payload".to_vec(),
+        compression1k().to_vec(),
+        (0..=255).cycle().take(10_000).collect(),
+        repeated,
+    ];
+
+    for data in cases {
+        let rust = m77rip::compress_level(&data, 2).unwrap();
+
+        // SAFETY: C function has no pointer arguments and accepts any u64 size.
+        let bound = unsafe { misa77_compress_bound(data.len() as u64, 2) } as usize;
+        let mut cpp = vec![0u8; bound];
+        // SAFETY: pointers come from live slices. `cpp` has the bound returned
+        // by the same C++ compressor level.
+        let written = unsafe {
+            misa77_compress(
+                data.as_ptr(),
+                data.len() as u64,
+                cpp.as_mut_ptr(),
+                cpp.len() as u64,
+                2,
+            )
+        } as usize;
+        assert!(written > 0, "C++ level 2 compression failed");
+        cpp.truncate(written);
+
+        assert_eq!(rust, cpp, "level 2 output differs for {}", data.len());
+    }
+}
+
 use proptest::{prelude::*, test_runner::FileFailurePersistence};
 
 fn vec_of_vec() -> impl Strategy<Value = Vec<Vec<u8>>> {

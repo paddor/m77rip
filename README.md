@@ -104,7 +104,7 @@ The encoder requires `std` and has only been tested on 64-bit targets.
 
 `compress_level` accepts levels `-1`, `0`, `1`, and `2`. Level `-1` is
 fastest, level `0` is the C++-ratio middle ground, level `1` favors ratio,
-and level `2` writes the misa77 v0.4 heavy format.
+and level `2` writes misa77 v0.5 heavy-format streams.
 
 ## License
 
