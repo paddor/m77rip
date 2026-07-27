@@ -1,9 +1,14 @@
+#[cfg(feature = "paranoid")]
 const EMPTY: i32 = -1;
 const PREFETCH_DISTANCE: usize = 64;
+#[cfg(feature = "paranoid")]
 const PREFETCH_CURSOR_DISTANCE: usize = 5;
 
 #[cfg(all(not(feature = "paranoid"), target_arch = "x86_64"))]
 use core::arch::x86_64::{_MM_HINT_T0, _mm_prefetch};
+
+#[cfg(not(feature = "paranoid"))]
+use libsais::SuffixArrayConstruction;
 
 #[cfg(all(not(feature = "paranoid"), target_arch = "x86_64"))]
 #[inline(always)]
@@ -18,27 +23,10 @@ fn prefetch<T>(slice: &[T], index: usize) {
 #[inline(always)]
 fn prefetch<T>(_slice: &[T], _index: usize) {}
 
-#[cfg(not(feature = "paranoid"))]
-#[inline(always)]
-fn at<T>(slice: &[T], index: usize) -> &T {
-    debug_assert!(index < slice.len());
-    // SAFETY: SAIS maintains all bucket, suffix-array, and type-array indices
-    // inside the slices sized for the current recursion level.
-    unsafe { slice.get_unchecked(index) }
-}
-
 #[cfg(feature = "paranoid")]
 #[inline(always)]
 fn at<T>(slice: &[T], index: usize) -> &T {
     &slice[index]
-}
-
-#[cfg(not(feature = "paranoid"))]
-#[inline(always)]
-fn at_mut<T>(slice: &mut [T], index: usize) -> &mut T {
-    debug_assert!(index < slice.len());
-    // SAFETY: same invariant as `at`; mutable callers never alias one slot.
-    unsafe { slice.get_unchecked_mut(index) }
 }
 
 #[cfg(feature = "paranoid")]
@@ -48,26 +36,79 @@ fn at_mut<T>(slice: &mut [T], index: usize) -> &mut T {
 }
 
 pub(crate) struct SaisWorkspace {
+    #[cfg(feature = "paranoid")]
     s32: Vec<i32>,
+    #[cfg(feature = "paranoid")]
     st_pool: Vec<u32>,
-    cnt_pool: Vec<usize>,
-    lms_pool: Vec<usize>,
+    #[cfg(feature = "paranoid")]
+    cnt_pool: Vec<u32>,
+    #[cfg(feature = "paranoid")]
+    lms_pool: Vec<u32>,
+    #[cfg(feature = "paranoid")]
     names: Vec<i32>,
-    bkt: Vec<usize>,
+    #[cfg(feature = "paranoid")]
+    bkt: Vec<u32>,
+    #[cfg(not(feature = "paranoid"))]
+    freq: [i32; 256],
 }
 
 impl SaisWorkspace {
     pub(crate) fn new() -> Self {
         Self {
+            #[cfg(feature = "paranoid")]
             s32: Vec::new(),
+            #[cfg(feature = "paranoid")]
             st_pool: Vec::new(),
+            #[cfg(feature = "paranoid")]
             cnt_pool: Vec::new(),
+            #[cfg(feature = "paranoid")]
             lms_pool: Vec::new(),
+            #[cfg(feature = "paranoid")]
             names: Vec::new(),
+            #[cfg(feature = "paranoid")]
             bkt: Vec::new(),
+            #[cfg(not(feature = "paranoid"))]
+            freq: [0; 256],
         }
     }
 
+    #[cfg(not(feature = "paranoid"))]
+    pub(crate) fn suffix_array_with_rank(
+        &mut self,
+        input: &[u8],
+        sa: &mut [i32],
+        rank: &mut [i32],
+    ) {
+        debug_assert_eq!(input.len(), sa.len());
+        debug_assert_eq!(input.len(), rank.len());
+        if input.is_empty() {
+            return;
+        }
+
+        self.freq.fill(0);
+        for &byte in input {
+            self.freq[byte as usize] += 1;
+        }
+
+        let mut construction = SuffixArrayConstruction::for_text(input)
+            .in_borrowed_buffer(sa)
+            .single_threaded();
+        // SAFETY: `self.freq` was just computed from exactly `input`.
+        construction = unsafe { construction.with_frequency_table(&mut self.freq) };
+        construction
+            .run()
+            .expect("libsais suffix-array construction failed");
+
+        for (i, &pos) in sa.iter().enumerate() {
+            if i + PREFETCH_DISTANCE < sa.len() {
+                prefetch(rank, sa[i + PREFETCH_DISTANCE] as usize);
+            }
+            debug_assert!(pos >= 0);
+            rank[pos as usize] = i as i32;
+        }
+    }
+
+    #[cfg(feature = "paranoid")]
     pub(crate) fn suffix_array_with_rank(
         &mut self,
         input: &[u8],
@@ -105,6 +146,7 @@ impl SaisWorkspace {
         }
     }
 
+    #[cfg(feature = "paranoid")]
     fn core(
         &mut self,
         s: &[i32],
@@ -151,7 +193,7 @@ impl SaisWorkspace {
                 *at_mut(st, i) = ((symbol as u32) << 1) | this_type;
 
                 if next_type == 1 && this_type == 0 {
-                    *at_mut(lms, lms_count) = i + 1;
+                    *at_mut(lms, lms_count) = (i + 1) as u32;
                     lms_count += 1;
                 }
                 next_type = this_type;
@@ -160,12 +202,13 @@ impl SaisWorkspace {
 
         {
             let cnt = &mut self.cnt_pool[cnt_off..cnt_off + k + 1];
-            let mut acc = 0usize;
+            let mut acc = 0u32;
             for count in cnt.iter_mut() {
                 let value = *count;
                 *count = acc;
                 acc += value;
             }
+            debug_assert_eq!(acc as usize, n);
         }
 
         sa.fill(EMPTY);
@@ -174,9 +217,11 @@ impl SaisWorkspace {
             let st = &self.st_pool[st_off..st_off + n];
             let lms = &self.lms_pool[lms_off..lms_off + n / 2 + 1];
             for &idx in lms.iter().take(lms_count) {
+                let idx = idx as usize;
                 let bucket = ((*at(st, idx) >> 1) as usize) + 1;
                 let slot = *at(&self.bkt, bucket) - 1;
                 *at_mut(&mut self.bkt, bucket) = slot;
+                let slot = slot as usize;
                 *at_mut(sa, slot) = idx as i32;
             }
         }
@@ -225,7 +270,7 @@ impl SaisWorkspace {
         let mut reduced = vec![0i32; lms_count];
         let lms = &self.lms_pool[lms_off..lms_off + n / 2 + 1];
         for (i, slot) in reduced.iter_mut().enumerate() {
-            let pos = *at(lms, lms_count - 1 - i);
+            let pos = *at(lms, lms_count - 1 - i) as usize;
             *slot = *at(&self.names, pos >> 1);
         }
 
@@ -250,16 +295,18 @@ impl SaisWorkspace {
         let lms = &self.lms_pool[lms_off..lms_off + n / 2 + 1];
         for i in (0..lms_count).rev() {
             let order = *at(sa, i) as usize;
-            let pos = *at(lms, lms_count - 1 - order);
+            let pos = *at(lms, lms_count - 1 - order) as usize;
             *at_mut(sa, i) = EMPTY;
             let bucket = ((*at(st, pos) >> 1) as usize) + 1;
             let slot = *at(&self.bkt, bucket) - 1;
             *at_mut(&mut self.bkt, bucket) = slot;
+            let slot = slot as usize;
             *at_mut(sa, slot) = pos as i32;
         }
         self.induce(s, sa, k, st_off, cnt_off);
     }
 
+    #[cfg(feature = "paranoid")]
     fn ensure_space(&mut self, n: usize, k: usize, st_off: usize, cnt_off: usize, lms_off: usize) {
         if self.st_pool.len() < st_off + n {
             self.st_pool.resize(st_off + n, 0);
@@ -278,10 +325,12 @@ impl SaisWorkspace {
         }
     }
 
+    #[cfg(feature = "paranoid")]
     fn copy_cursors(&mut self, k: usize, cnt_off: usize) {
         self.bkt[..=k].copy_from_slice(&self.cnt_pool[cnt_off..cnt_off + k + 1]);
     }
 
+    #[cfg(feature = "paranoid")]
     fn induce(&mut self, s: &[i32], sa: &mut [i32], k: usize, st_off: usize, cnt_off: usize) {
         let n = s.len();
         self.copy_cursors(k, cnt_off);
@@ -289,9 +338,9 @@ impl SaisWorkspace {
             let st = &self.st_pool[st_off..st_off + n];
             let bkt = &mut self.bkt;
             let last_bucket = (*at(st, n - 1) >> 1) as usize;
-            let slot = *at(bkt, last_bucket);
+            let slot = *at(bkt, last_bucket) as usize;
             *at_mut(sa, slot) = (n - 1) as i32;
-            *at_mut(bkt, last_bucket) = slot + 1;
+            *at_mut(bkt, last_bucket) = (slot + 1) as u32;
 
             for i in 0..n {
                 if i + PREFETCH_DISTANCE < n {
@@ -311,9 +360,9 @@ impl SaisWorkspace {
                     let val = *at(st, prev);
                     if val & 1 == 0 {
                         let bucket = (val >> 1) as usize;
-                        let slot = *at(bkt, bucket);
+                        let slot = *at(bkt, bucket) as usize;
                         *at_mut(sa, slot) = prev as i32;
-                        *at_mut(bkt, bucket) = slot + 1;
+                        *at_mut(bkt, bucket) = (slot + 1) as u32;
                     }
                 }
             }
@@ -343,6 +392,7 @@ impl SaisWorkspace {
                         let bucket = ((val >> 1) as usize) + 1;
                         let slot = *at(bkt, bucket) - 1;
                         *at_mut(bkt, bucket) = slot;
+                        let slot = slot as usize;
                         *at_mut(sa, slot) = prev as i32;
                     }
                 }
@@ -351,10 +401,12 @@ impl SaisWorkspace {
     }
 }
 
+#[cfg(feature = "paranoid")]
 fn is_lms(st: &[u32], pos: usize) -> bool {
     pos > 0 && *at(st, pos) & 1 != 0 && *at(st, pos - 1) & 1 == 0
 }
 
+#[cfg(feature = "paranoid")]
 fn lms_equal(st: &[u32], prev: usize, cur: usize, n: usize) -> bool {
     for off in 0.. {
         let p = prev + off;
