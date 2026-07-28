@@ -6,7 +6,6 @@ use m77rip_core::format::*;
 use core::arch::x86_64::{__m256i, _mm256_cmpeq_epi8, _mm256_lddqu_si256, _mm256_movemask_epi8};
 #[cfg(not(feature = "paranoid"))]
 use core::ptr;
-#[cfg(not(feature = "paranoid"))]
 use fearless_simd::{Simd, prelude::*, u8x32};
 
 const HASH_SIZE: usize = 1 << 16;
@@ -85,7 +84,13 @@ unsafe fn load_u8x32_unchecked<S: Simd>(simd: S, src: &[u8], pos: usize) -> u8x3
     simd.load_array_ref_u8x32(lanes)
 }
 
-#[cfg(not(feature = "paranoid"))]
+#[cfg(feature = "paranoid")]
+#[inline(always)]
+fn load_u8x32_checked<S: Simd>(simd: S, src: &[u8], pos: usize) -> u8x32<S> {
+    let lanes: &[u8; VECTOR_WIDTH] = src[pos..pos + VECTOR_WIDTH].try_into().unwrap();
+    simd.load_array_ref_u8x32(lanes)
+}
+
 #[inline(always)]
 fn lcp_loaded<S: Simd>(a: u8x32<S>, b: u8x32<S>) -> usize {
     let eq = a.simd_eq(b).to_bitmask() as u32;
@@ -308,10 +313,17 @@ fn compress_dispatch(src: &[u8], dst: &mut [u8], level: i8) -> usize {
     match level {
         -1 => speed_compress(src, dst),
         0 => loose_compress(src, dst),
-        1 => default_compress(src, dst),
+        1 => compress_dispatch_level1(src, dst),
         2 => heavy_compress(src, dst),
         _ => unreachable!(),
     }
+}
+
+#[cfg(feature = "paranoid")]
+#[inline(never)]
+fn compress_dispatch_level1(src: &[u8], dst: &mut [u8]) -> usize {
+    let level_obj = fearless_simd::Level::new();
+    fearless_simd::dispatch!(level_obj, simd => default_compress(simd, src, dst))
 }
 
 struct LatestHashTable {
@@ -932,6 +944,33 @@ fn find_ring_match<const WIDTH: usize>(
     for &entry in &bucket.entries {
         let ilst = recover_entry_pos(entry, pos);
         let imatch_len = lcp(src, pos, ilst);
+        if imatch_len > match_len {
+            lst = ilst;
+            match_len = imatch_len;
+        }
+    }
+
+    (match_len, lst)
+}
+
+#[cfg(feature = "paranoid")]
+#[inline(always)]
+fn find_ring_match_simd<S: Simd, const WIDTH: usize>(
+    simd: S,
+    src: &[u8],
+    ht: &RingHashTable<WIDTH>,
+    pos: usize,
+) -> (usize, usize) {
+    let hsh = hash4(read_u32_le(src, pos));
+    let reg = load_u8x32_checked(simd, src, pos);
+    let bucket = ht.bucket(hsh);
+    let mut lst = 0;
+    let mut match_len = 0;
+
+    for &entry in &bucket.entries {
+        let ilst = recover_entry_pos(entry, pos);
+        let ireg = load_u8x32_checked(simd, src, ilst);
+        let imatch_len = lcp_loaded(reg, ireg);
         if imatch_len > match_len {
             lst = ilst;
             match_len = imatch_len;
@@ -1760,8 +1799,8 @@ fn default_compress<S: Simd>(simd: S, src: &[u8], dst: &mut [u8]) -> usize {
 
 #[cfg(feature = "paranoid")]
 #[inline(always)]
-fn default_compress(src: &[u8], dst: &mut [u8]) -> usize {
-    default_compress_impl(src, dst)
+fn default_compress<S: Simd>(simd: S, src: &[u8], dst: &mut [u8]) -> usize {
+    default_compress_impl(simd, src, dst)
 }
 
 #[cfg(not(feature = "paranoid"))]
@@ -1861,7 +1900,7 @@ fn default_compress_impl<S: Simd>(simd: S, src: &[u8], dst: &mut [u8]) -> usize 
 
 #[cfg(feature = "paranoid")]
 #[inline(always)]
-fn default_compress_impl(src: &[u8], dst: &mut [u8]) -> usize {
+fn default_compress_impl<S: Simd>(simd: S, src: &[u8], dst: &mut [u8]) -> usize {
     const LOOKAHEAD: usize = 2;
     const LA_GATE: usize = 8;
     const _: () = assert!(LOOKAHEAD == 2);
@@ -1893,7 +1932,7 @@ fn default_compress_impl(src: &[u8], dst: &mut [u8]) -> usize {
         batch_insert_ring(src, &mut ht, &mut hpos, pos);
 
         let (mut match_len, mut lst) = if pos > HASHTAB_LAG {
-            find_ring_match(src, &ht, pos)
+            find_ring_match_simd(simd, src, &ht, pos)
         } else {
             (0, 0)
         };
@@ -1903,7 +1942,7 @@ fn default_compress_impl(src: &[u8], dst: &mut [u8]) -> usize {
             if match_len < LA_GATE {
                 let npos = base_pos + 1;
                 if npos + MAX_MATCH_LEN <= match_end_limit {
-                    let (nmatch_len, nlst) = find_ring_match(src, &ht, npos);
+                    let (nmatch_len, nlst) = find_ring_match_simd(simd, src, &ht, npos);
                     if nmatch_len > match_len {
                         pos = npos;
                         lst = nlst;
@@ -1914,7 +1953,7 @@ fn default_compress_impl(src: &[u8], dst: &mut [u8]) -> usize {
             if match_len < LA_GATE {
                 let npos = base_pos + LOOKAHEAD;
                 if npos + MAX_MATCH_LEN <= match_end_limit {
-                    let (nmatch_len, nlst) = find_ring_match(src, &ht, npos);
+                    let (nmatch_len, nlst) = find_ring_match_simd(simd, src, &ht, npos);
                     if nmatch_len > match_len {
                         pos = npos;
                         lst = nlst;

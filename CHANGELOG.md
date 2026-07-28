@@ -8,6 +8,7 @@ All notable changes to this project will be documented in this file.
   stale cache entries from before the misa77 v0.5 encoder port.
 - Optimized paranoid level `2` suffix-array construction and workspace reuse
   while preserving byte-identical output.
+- Optimized paranoid level `1` compression with safe SIMD match probing.
 - Clarified paranoid safety scope: the m77rip encode/decode crates forbid
   unsafe code, while level `2` suffix sorting uses the safe `libsais` API.
 

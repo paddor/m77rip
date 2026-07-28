@@ -78,8 +78,8 @@ better. Level `-1` has no C++ misa77 peer, so it compares against C++ level 0.
 | `L-1` | Incompressible | 239 (5.25x) | 1560 (0.23x) | 1.20 (0.89x) |
 | `L0` | Compressible | 72.7 (1.11x) | 1949 (0.34x) | 2.49 (0.98x) |
 | `L0` | Incompressible | 61.2 (1.34x) | 2861 (0.42x) | 1.27 (0.94x) |
-| `L1` | Compressible | 50.0 (0.77x) | 2060 (0.41x) | 2.64 (0.98x) |
-| `L1` | Incompressible | 25.6 (0.80x) | 1240 (0.46x) | 1.49 (0.99x) |
+| `L1` | Compressible | 79.5 (1.23x) | 2060 (0.41x) | 2.64 (0.98x) |
+| `L1` | Incompressible | 38.9 (1.22x) | 1240 (0.46x) | 1.49 (0.99x) |
 | `L2` | Compressible | 9.8 (1.07x) | 1212 (0.23x) | 2.98 (1.00x) |
 | `L2` | Incompressible | 10.5 (1.15x) | 764 (0.22x) | 1.54 (1.00x) |
 
