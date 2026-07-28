@@ -38,7 +38,7 @@ assert_eq!(written, size);
 |---------|---------|-------------|
 | `std` | yes | Standard library. Enables runtime SIMD detection and `std::error::Error` impl. |
 | `alloc` | yes (via `std`) | Enables `decompress()` which returns a `Vec<u8>`. |
-| `paranoid` | no | Zero-unsafe build. All primitives use bounds-checked operations. Output is byte-identical. |
+| `paranoid` | no | Forbids unsafe in m77rip encode/decode crates. Local primitives use bounds-checked operations. Level 2 suffix sorting uses the safe `libsais` API. Output is byte-identical. |
 | `c-reference` | no | Builds the vendored C++ reference implementation for benchmarking. |
 
 ## Performance
@@ -70,7 +70,7 @@ better. Level `-1` has no C++ misa77 peer, so it compares against C++ level 0.
 | `L2` | Compressible | 13.1 (1.44x) | 4731 (0.90x) | 2.98 (1.00x) |
 | `L2` | Incompressible | 12.2 (1.34x) | 2917 (0.85x) | 1.54 (1.00x) |
 
-### Paranoid build (`--features paranoid`, zero unsafe)
+### Paranoid build (`--features paranoid`, no unsafe in m77rip crates)
 
 | Level | Corpus | Encode MB/s (vs misa77) | Decode MB/s (vs misa77) | Ratio (vs misa77) |
 |-------|--------|--------------------------|--------------------------|-------------------|
@@ -78,10 +78,10 @@ better. Level `-1` has no C++ misa77 peer, so it compares against C++ level 0.
 | `L-1` | Incompressible | 239 (5.25x) | 1560 (0.23x) | 1.20 (0.89x) |
 | `L0` | Compressible | 72.7 (1.11x) | 1949 (0.34x) | 2.49 (0.98x) |
 | `L0` | Incompressible | 61.2 (1.34x) | 2861 (0.42x) | 1.27 (0.94x) |
-| `L1` | Compressible | 50.0 (0.77x) | 2060 (0.41x) | 2.64 (0.98x) |
-| `L1` | Incompressible | 25.6 (0.80x) | 1240 (0.46x) | 1.49 (0.99x) |
-| `L2` | Compressible | 20.8 (2.28x) | 1230 (0.23x) | 2.82 (0.95x) |
-| `L2` | Incompressible | 19.4 (2.14x) | 811 (0.24x) | 1.50 (0.98x) |
+| `L1` | Compressible | 79.5 (1.23x) | 2060 (0.41x) | 2.64 (0.98x) |
+| `L1` | Incompressible | 38.9 (1.22x) | 1240 (0.46x) | 1.49 (0.99x) |
+| `L2` | Compressible | 9.8 (1.07x) | 1212 (0.23x) | 2.98 (1.00x) |
+| `L2` | Incompressible | 10.5 (1.15x) | 764 (0.22x) | 1.54 (1.00x) |
 
 ## `no_std` and 32-bit support
 
