@@ -3,7 +3,7 @@ use m77rip_core::Error;
 use m77rip_core::format::*;
 
 #[cfg(all(not(feature = "paranoid"), target_arch = "x86_64"))]
-use core::arch::x86_64::{__m256i, _mm256_cmpeq_epi8, _mm256_loadu_si256, _mm256_movemask_epi8};
+use core::arch::x86_64::{__m256i, _mm256_cmpeq_epi8, _mm256_lddqu_si256, _mm256_movemask_epi8};
 #[cfg(not(feature = "paranoid"))]
 use core::ptr;
 #[cfg(not(feature = "paranoid"))]
@@ -497,14 +497,27 @@ impl HeavyLiveSet {
     unsafe fn set_unchecked(&mut self, index: usize) {
         debug_assert!(index < self.l0.len() * 64);
         let word0 = index >> 6;
-        let word1 = index >> 12;
-        let word2 = index >> 18;
         // SAFETY: caller supplies a suffix-array rank within the live-set
         // universe; derived words are therefore inside all levels.
         unsafe {
-            *self.l0.as_mut_ptr().add(word0) |= 1u64 << (index & 63);
-            *self.l1.as_mut_ptr().add(word1) |= 1u64 << ((index >> 6) & 63);
-            *self.l2.as_mut_ptr().add(word2) |= 1u64 << ((index >> 12) & 63);
+            let l0 = self.l0.as_mut_ptr();
+            let word0_ptr = l0.add(word0);
+            let old0 = *word0_ptr;
+            *word0_ptr = old0 | (1u64 << (index & 63));
+            if old0 != 0 {
+                return;
+            }
+
+            let word1 = index >> 12;
+            let l1 = self.l1.as_mut_ptr();
+            let word1_ptr = l1.add(word1);
+            let old1 = *word1_ptr;
+            *word1_ptr = old1 | (1u64 << ((index >> 6) & 63));
+            if old1 != 0 {
+                return;
+            }
+
+            *self.l2.as_mut_ptr().add(index >> 18) |= 1u64 << ((index >> 12) & 63);
         }
     }
 
@@ -543,7 +556,7 @@ impl HeavyLiveSet {
         let mask0 = if bit0 == 0 { 0 } else { (1u64 << bit0) - 1 };
         let bits0 = self.l0[word0] & mask0;
         if bits0 != 0 {
-            return Some((word0 << 6) + 63 - bits0.leading_zeros() as usize);
+            return Some((word0 << 6) + high_bit_index(bits0));
         }
 
         let word1 = word0 >> 6;
@@ -551,9 +564,9 @@ impl HeavyLiveSet {
         let mask1 = if bit1 == 0 { 0 } else { (1u64 << bit1) - 1 };
         let bits1 = self.l1[word1] & mask1;
         if bits1 != 0 {
-            word0 = (word1 << 6) + 63 - bits1.leading_zeros() as usize;
+            word0 = (word1 << 6) + high_bit_index(bits1);
             let bits = self.l0[word0];
-            return Some((word0 << 6) + 63 - bits.leading_zeros() as usize);
+            return Some((word0 << 6) + high_bit_index(bits));
         }
 
         let word2 = word1 >> 6;
@@ -564,11 +577,11 @@ impl HeavyLiveSet {
             if bits2 == 0 {
                 continue;
             }
-            let next1 = (level2 << 6) + 63 - bits2.leading_zeros() as usize;
+            let next1 = (level2 << 6) + high_bit_index(bits2);
             let bits1 = self.l1[next1];
-            let next0 = (next1 << 6) + 63 - bits1.leading_zeros() as usize;
+            let next0 = (next1 << 6) + high_bit_index(bits1);
             let bits0 = self.l0[next0];
-            return Some((next0 << 6) + 63 - bits0.leading_zeros() as usize);
+            return Some((next0 << 6) + high_bit_index(bits0));
         }
         None
     }
@@ -636,7 +649,7 @@ impl HeavyLiveSet {
 
             let bits0 = *l0.add(word0) & mask0;
             if bits0 != 0 {
-                return (word0 << 6) + 63 - bits0.leading_zeros() as usize;
+                return (word0 << 6) + high_bit_index(bits0);
             }
 
             let word1 = word0 >> 6;
@@ -644,9 +657,9 @@ impl HeavyLiveSet {
             let mask1 = if bit1 == 0 { 0 } else { (1u64 << bit1) - 1 };
             let bits1 = *l1.add(word1) & mask1;
             if bits1 != 0 {
-                word0 = (word1 << 6) + 63 - bits1.leading_zeros() as usize;
+                word0 = (word1 << 6) + high_bit_index(bits1);
                 let bits = *l0.add(word0);
-                return (word0 << 6) + 63 - bits.leading_zeros() as usize;
+                return (word0 << 6) + high_bit_index(bits);
             }
 
             let word2 = word1 >> 6;
@@ -659,11 +672,11 @@ impl HeavyLiveSet {
                 if bits2 == 0 {
                     continue;
                 }
-                let next1 = (level2 << 6) + 63 - bits2.leading_zeros() as usize;
+                let next1 = (level2 << 6) + high_bit_index(bits2);
                 let bits1 = *l1.add(next1);
-                let next0 = (next1 << 6) + 63 - bits1.leading_zeros() as usize;
+                let next0 = (next1 << 6) + high_bit_index(bits1);
                 let bits0 = *l0.add(next0);
-                return (next0 << 6) + 63 - bits0.leading_zeros() as usize;
+                return (next0 << 6) + high_bit_index(bits0);
             }
         }
         HEAVY_NO_RANK
@@ -726,6 +739,30 @@ impl HeavyLiveSet {
         }
         HEAVY_NO_RANK
     }
+}
+
+#[cfg(all(not(feature = "paranoid"), target_arch = "x86_64"))]
+#[inline(always)]
+fn high_bit_index(bits: u64) -> usize {
+    debug_assert_ne!(bits, 0);
+    let out: usize;
+    // SAFETY: callers pass nonzero words after checking the live-set summary.
+    unsafe {
+        core::arch::asm!(
+            "bsr {out}, {bits}",
+            out = lateout(reg) out,
+            bits = in(reg) bits,
+            options(pure, nomem, nostack)
+        );
+    }
+    out
+}
+
+#[cfg(any(feature = "paranoid", not(target_arch = "x86_64")))]
+#[inline(always)]
+fn high_bit_index(bits: u64) -> usize {
+    debug_assert_ne!(bits, 0);
+    bits.leading_zeros() as usize ^ 63
 }
 
 #[inline]
@@ -1120,6 +1157,61 @@ fn heavy_raw(src: &[u8], dst: &mut [u8]) -> usize {
     dlpos + src_size
 }
 
+#[cfg(feature = "paranoid")]
+#[derive(Clone, Copy, Default)]
+struct HeavyArrival {
+    dis: u32,
+    len: u8,
+    lit_run: u64,
+}
+
+#[derive(Clone, Copy)]
+struct HeavyTokenRecord {
+    match_start: usize,
+    len: u8,
+    dis: u32,
+}
+
+struct HeavyWorkspace {
+    sorter: SaisWorkspace,
+    sa: Vec<i32>,
+    rank: Vec<u32>,
+    live: HeavyLiveSet,
+    max_len: Vec<u8>,
+    match_dis: Vec<u32>,
+    dp: Vec<usize>,
+    #[cfg(feature = "paranoid")]
+    arrivals: Vec<HeavyArrival>,
+    #[cfg(not(feature = "paranoid"))]
+    arrival_len: Vec<u8>,
+    block_tokens: Vec<HeavyTokenRecord>,
+}
+
+impl HeavyWorkspace {
+    fn new() -> Self {
+        Self {
+            sorter: SaisWorkspace::new(),
+            sa: Vec::new(),
+            rank: Vec::new(),
+            live: HeavyLiveSet::default(),
+            max_len: Vec::new(),
+            match_dis: Vec::new(),
+            dp: Vec::new(),
+            #[cfg(feature = "paranoid")]
+            arrivals: Vec::new(),
+            #[cfg(not(feature = "paranoid"))]
+            arrival_len: Vec::new(),
+            block_tokens: Vec::new(),
+        }
+    }
+}
+
+#[cfg(all(not(feature = "paranoid"), feature = "std"))]
+std::thread_local! {
+    static HEAVY_WORKSPACE: core::cell::RefCell<HeavyWorkspace> =
+        core::cell::RefCell::new(HeavyWorkspace::new());
+}
+
 #[cfg(not(feature = "paranoid"))]
 #[allow(clippy::too_many_arguments)]
 #[inline(always)]
@@ -1127,7 +1219,7 @@ unsafe fn heavy_find_matches_simd<S: Simd + Copy>(
     simd: S,
     src: &[u8],
     sa: &[i32],
-    rank: &[i32],
+    rank: &[u32],
     live: &mut HeavyLiveSet,
     max_len: &mut [u8],
     match_dis: &mut [u32],
@@ -1146,20 +1238,20 @@ unsafe fn heavy_find_matches_simd<S: Simd + Copy>(
     let match_dis_ptr = match_dis.as_mut_ptr();
     let mut carry_len = 0usize;
     let mut carry_dis = 0u32;
+    let set_start = block_start.max(seg_start + HEAVY_MIN_DISTANCE);
+    let clear_start = block_start.max(seg_start + HEAVY_MAX_DISTANCE + 1);
 
     // SAFETY: caller built `sa`/`rank` for `[seg_start, seg_end)`, sized
     // outputs to block length, and built `live` over those SA ranks.
     unsafe {
         for pos in block_start..block_end {
             let block_pos = pos - block_start;
-            if pos >= HEAVY_MIN_DISTANCE && pos - HEAVY_MIN_DISTANCE >= seg_start {
+            if pos >= set_start {
                 let live_rank = *rank_ptr.add(pos - HEAVY_MIN_DISTANCE - seg_start);
-                debug_assert!(live_rank >= 0);
                 live.set_unchecked(live_rank as usize);
             }
-            if pos > HEAVY_MAX_DISTANCE && pos - HEAVY_MAX_DISTANCE > seg_start {
+            if pos >= clear_start {
                 let dead_rank = *rank_ptr.add(pos - HEAVY_MAX_DISTANCE - 1 - seg_start);
-                debug_assert!(dead_rank >= 0);
                 live.clear_unchecked(dead_rank as usize);
             }
 
@@ -1187,7 +1279,7 @@ unsafe fn heavy_find_matches_simd<S: Simd + Copy>(
                         debug_assert!(candidate_rank < sa.len());
                         let sa_pos = *sa_ptr.add(candidate_rank);
                         debug_assert!(sa_pos >= 0);
-                        let candidate = seg_start + sa_pos as usize;
+                        let candidate = seg_start + sa_pos as u32 as usize;
                         debug_assert!(candidate <= pos - HEAVY_MIN_DISTANCE);
                         let len = lcp_heavy(simd, src, pos, candidate, limit);
                         if len > best_len {
@@ -1234,7 +1326,7 @@ unsafe fn heavy_find_matches_simd<S: Simd + Copy>(
 unsafe fn heavy_find_matches_avx2(
     src: &[u8],
     sa: &[i32],
-    rank: &[i32],
+    rank: &[u32],
     live: &mut HeavyLiveSet,
     max_len: &mut [u8],
     match_dis: &mut [u32],
@@ -1254,6 +1346,8 @@ unsafe fn heavy_find_matches_avx2(
     let match_dis_ptr = match_dis.as_mut_ptr();
     let mut carry_len = 0usize;
     let mut carry_dis = 0u32;
+    let set_start = block_start.max(seg_start + HEAVY_MIN_DISTANCE);
+    let clear_start = block_start.max(seg_start + HEAVY_MAX_DISTANCE + 1);
 
     // SAFETY: caller built `sa`/`rank` for `[seg_start, seg_end)`, sized
     // outputs to block length, and built `live` over those SA ranks. Runtime
@@ -1270,8 +1364,8 @@ unsafe fn heavy_find_matches_avx2(
 
                     let mut off = 0usize;
                     while off + VECTOR_WIDTH <= limit {
-                        let av = _mm256_loadu_si256(src_ptr.add(a + off).cast::<__m256i>());
-                        let bv = _mm256_loadu_si256(src_ptr.add(b + off).cast::<__m256i>());
+                        let av = _mm256_lddqu_si256(src_ptr.add(a + off).cast::<__m256i>());
+                        let bv = _mm256_lddqu_si256(src_ptr.add(b + off).cast::<__m256i>());
                         let eq = _mm256_cmpeq_epi8(av, bv);
                         let diff = !(_mm256_movemask_epi8(eq) as u32);
                         let len = diff.trailing_zeros() as usize;
@@ -1279,6 +1373,14 @@ unsafe fn heavy_find_matches_avx2(
                         if len < VECTOR_WIDTH {
                             break 'lcp off;
                         }
+                    }
+                    while off + 8 <= limit {
+                        let diff = ptr::read_unaligned(src_ptr.add(a + off).cast::<u64>()).to_le()
+                            ^ ptr::read_unaligned(src_ptr.add(b + off).cast::<u64>()).to_le();
+                        if diff != 0 {
+                            break 'lcp off + (diff.trailing_zeros() as usize >> 3);
+                        }
+                        off += 8;
                     }
                     while off < limit {
                         if *src_ptr.add(a + off) != *src_ptr.add(b + off) {
@@ -1293,14 +1395,12 @@ unsafe fn heavy_find_matches_avx2(
 
         for pos in block_start..block_end {
             let block_pos = pos - block_start;
-            if pos >= HEAVY_MIN_DISTANCE && pos - HEAVY_MIN_DISTANCE >= seg_start {
+            if pos >= set_start {
                 let live_rank = *rank_ptr.add(pos - HEAVY_MIN_DISTANCE - seg_start);
-                debug_assert!(live_rank >= 0);
                 live.set_unchecked(live_rank as usize);
             }
-            if pos > HEAVY_MAX_DISTANCE && pos - HEAVY_MAX_DISTANCE > seg_start {
+            if pos >= clear_start {
                 let dead_rank = *rank_ptr.add(pos - HEAVY_MAX_DISTANCE - 1 - seg_start);
-                debug_assert!(dead_rank >= 0);
                 live.clear_unchecked(dead_rank as usize);
             }
 
@@ -1328,7 +1428,7 @@ unsafe fn heavy_find_matches_avx2(
                         debug_assert!(candidate_rank < sa.len());
                         let sa_pos = *sa_ptr.add(candidate_rank);
                         debug_assert!(sa_pos >= 0);
-                        let candidate = seg_start + sa_pos as usize;
+                        let candidate = seg_start + sa_pos as u32 as usize;
                         debug_assert!(candidate <= pos - HEAVY_MIN_DISTANCE);
                         let len = lcp_at!(pos, candidate, limit);
                         if len > best_len {
@@ -1369,7 +1469,7 @@ unsafe fn heavy_find_matches_avx2(
 fn heavy_find_matches<F>(
     src: &[u8],
     sa: &[i32],
-    rank: &[i32],
+    rank: &[u32],
     live: &mut HeavyLiveSet,
     max_len: &mut [u8],
     match_dis: &mut [u32],
@@ -1383,12 +1483,14 @@ fn heavy_find_matches<F>(
 {
     let mut carry_len = 0usize;
     let mut carry_dis = 0u32;
+    let set_start = block_start.max(seg_start + HEAVY_MIN_DISTANCE);
+    let clear_start = block_start.max(seg_start + HEAVY_MAX_DISTANCE + 1);
     for pos in block_start..block_end {
         let block_pos = pos - block_start;
-        if pos >= HEAVY_MIN_DISTANCE && pos - HEAVY_MIN_DISTANCE >= seg_start {
+        if pos >= set_start {
             live.set(rank[pos - HEAVY_MIN_DISTANCE - seg_start] as usize);
         }
-        if pos > HEAVY_MAX_DISTANCE && pos - HEAVY_MAX_DISTANCE > seg_start {
+        if pos >= clear_start {
             live.clear(rank[pos - HEAVY_MAX_DISTANCE - 1 - seg_start] as usize);
         }
 
@@ -1412,7 +1514,7 @@ fn heavy_find_matches<F>(
             let Some(candidate_rank) = candidate_rank else {
                 return;
             };
-            let candidate = seg_start + sa[candidate_rank] as usize;
+            let candidate = seg_start + sa[candidate_rank] as u32 as usize;
             debug_assert!(candidate <= pos - HEAVY_MIN_DISTANCE);
             let len = lcp_at(src, pos, candidate, limit);
             if len > best_len {
@@ -2122,7 +2224,9 @@ fn loose_compress_impl(src: &[u8], dst: &mut [u8]) -> usize {
 #[cfg(not(feature = "paranoid"))]
 #[inline(always)]
 fn heavy_compress<S: Simd + Copy>(simd: S, src: &[u8], dst: &mut [u8]) -> usize {
+    let mut workspace = HeavyWorkspace::new();
     heavy_compress_body(
+        &mut workspace,
         src,
         dst,
         |src, sa, rank, live, max_len, match_dis, block_start, block_end, seg_start, hard_end| {
@@ -2146,7 +2250,38 @@ fn heavy_compress<S: Simd + Copy>(simd: S, src: &[u8], dst: &mut [u8]) -> usize 
 #[cfg(all(not(feature = "paranoid"), target_arch = "x86_64"))]
 #[target_feature(enable = "avx2")]
 unsafe fn heavy_compress_avx2(src: &[u8], dst: &mut [u8]) -> usize {
+    #[cfg(feature = "std")]
+    {
+        HEAVY_WORKSPACE.with(|cell| match cell.try_borrow_mut() {
+            Ok(mut workspace) => {
+                // SAFETY: caller reached this function through AVX2 runtime dispatch.
+                unsafe { heavy_compress_avx2_with_workspace(&mut workspace, src, dst) }
+            }
+            Err(_) => {
+                let mut workspace = HeavyWorkspace::new();
+                // SAFETY: caller reached this function through AVX2 runtime dispatch.
+                unsafe { heavy_compress_avx2_with_workspace(&mut workspace, src, dst) }
+            }
+        })
+    }
+
+    #[cfg(not(feature = "std"))]
+    {
+        let mut workspace = HeavyWorkspace::new();
+        // SAFETY: caller reached this function through AVX2 runtime dispatch.
+        unsafe { heavy_compress_avx2_with_workspace(&mut workspace, src, dst) }
+    }
+}
+
+#[cfg(all(not(feature = "paranoid"), target_arch = "x86_64"))]
+#[target_feature(enable = "avx2")]
+unsafe fn heavy_compress_avx2_with_workspace(
+    workspace: &mut HeavyWorkspace,
+    src: &[u8],
+    dst: &mut [u8],
+) -> usize {
     heavy_compress_body(
+        workspace,
         src,
         dst,
         |src, sa, rank, live, max_len, match_dis, block_start, block_end, seg_start, hard_end| {
@@ -2172,7 +2307,9 @@ unsafe fn heavy_compress_avx2(src: &[u8], dst: &mut [u8]) -> usize {
 #[cfg(feature = "paranoid")]
 #[inline(always)]
 fn heavy_compress(src: &[u8], dst: &mut [u8]) -> usize {
+    let mut workspace = HeavyWorkspace::new();
     heavy_compress_body(
+        &mut workspace,
         src,
         dst,
         |src, sa, rank, live, max_len, match_dis, block_start, block_end, seg_start, hard_end| {
@@ -2195,12 +2332,17 @@ fn heavy_compress(src: &[u8], dst: &mut [u8]) -> usize {
 }
 
 #[inline(always)]
-fn heavy_compress_body<F>(src: &[u8], dst: &mut [u8], mut find_matches: F) -> usize
+fn heavy_compress_body<F>(
+    workspace: &mut HeavyWorkspace,
+    src: &[u8],
+    dst: &mut [u8],
+    mut find_matches: F,
+) -> usize
 where
     F: FnMut(
         &[u8],
         &[i32],
-        &[i32],
+        &[u32],
         &mut HeavyLiveSet,
         &mut [u8],
         &mut [u32],
@@ -2229,29 +2371,24 @@ where
     let mut tokens = 0usize;
     let mut long_matches = 0usize;
 
-    #[derive(Clone, Copy, Default)]
-    struct Arrival {
-        dis: u32,
-        len: u8,
-        lit_run: u64,
-    }
+    #[cfg(feature = "paranoid")]
+    type Arrival = HeavyArrival;
+    type TokenRecord = HeavyTokenRecord;
 
-    #[derive(Clone, Copy)]
-    struct TokenRecord {
-        match_start: usize,
-        len: u8,
-        dis: u32,
-    }
-
-    let mut sorter = SaisWorkspace::new();
-    let mut sa = Vec::new();
-    let mut rank = Vec::new();
-    let mut live = HeavyLiveSet::default();
-    let mut max_len = Vec::new();
-    let mut match_dis = Vec::new();
-    let mut dp = Vec::new();
-    let mut arrivals = Vec::new();
-    let mut block_tokens = Vec::new();
+    let HeavyWorkspace {
+        sorter,
+        sa,
+        rank,
+        live,
+        max_len,
+        match_dis,
+        dp,
+        #[cfg(feature = "paranoid")]
+        arrivals,
+        #[cfg(not(feature = "paranoid"))]
+        arrival_len,
+        block_tokens,
+    } = workspace;
 
     let mut qstar = 0usize;
     let mut qstar_cost = EXT_HEADER_SIZE;
@@ -2267,7 +2404,7 @@ where
 
         sa.resize(seg_len, 0);
         rank.resize(seg_len, 0);
-        sorter.suffix_array_with_rank(&src[seg_start..seg_end], &mut sa, &mut rank);
+        sorter.suffix_array_with_rank(&src[seg_start..seg_end], sa, rank);
 
         if max_len.len() != block_len {
             max_len.resize(block_len, 0u8);
@@ -2283,23 +2420,35 @@ where
             } else {
                 0
             };
-        live.build(&sa, seg_len, init_limit);
+        live.build(sa.as_slice(), seg_len, init_limit);
 
         find_matches(
             src,
-            &sa,
-            &rank,
-            &mut live,
-            &mut max_len,
-            &mut match_dis,
+            sa.as_slice(),
+            rank.as_slice(),
+            live,
+            max_len,
+            match_dis,
             block_start,
             block_end,
             seg_start,
             hard_end,
         );
 
-        dp.clear();
-        dp.resize(block_len + 1, HEAVY_DP_INF);
+        #[cfg(not(feature = "paranoid"))]
+        {
+            dp.clear();
+            dp.resize(block_len + 1, HEAVY_DP_INF);
+            if arrival_len.len() != block_len + 1 {
+                arrival_len.resize(block_len + 1, 0);
+            }
+        }
+        #[cfg(feature = "paranoid")]
+        {
+            dp.clear();
+            dp.resize(block_len + 1, HEAVY_DP_INF);
+        }
+        #[cfg(feature = "paranoid")]
         if arrivals.len() != block_len + 1 {
             arrivals.resize(block_len + 1, Arrival::default());
         }
@@ -2318,9 +2467,8 @@ where
         #[cfg(not(feature = "paranoid"))]
         {
             let dp_ptr = dp.as_mut_ptr();
-            let arrivals_ptr = arrivals.as_mut_ptr();
+            let arrival_len_ptr = arrival_len.as_mut_ptr();
             let max_len_ptr = max_len.as_ptr();
-            let match_dis_ptr = match_dis.as_ptr();
             // SAFETY: DP arrays have `block_len + 1` entries, match arrays have
             // `block_len` entries, and matcher clips all lengths to the block.
             unsafe {
@@ -2349,19 +2497,61 @@ where
                     if longest >= MIN_MATCH_LEN {
                         let cost = literal_cost + 4;
                         let top_code = *HEAVY_CODE_FLOOR.get_unchecked(longest) as usize;
-                        let dis = *match_dis_ptr.add(i);
-                        let mut code = 1usize;
+                        macro_rules! relax_len {
+                            ($len:expr) => {{
+                                let len = $len;
+                                let target = i + len as usize;
+                                let target_cost = dp_ptr.add(target);
+                                if cost < *target_cost {
+                                    *target_cost = cost;
+                                    *arrival_len_ptr.add(target) = len;
+                                }
+                            }};
+                        }
+
+                        if top_code >= 1 {
+                            relax_len!(4);
+                        }
+                        if top_code >= 2 {
+                            relax_len!(5);
+                        }
+                        if top_code >= 3 {
+                            relax_len!(6);
+                        }
+                        if top_code >= 4 {
+                            relax_len!(7);
+                        }
+                        if top_code >= 5 {
+                            relax_len!(8);
+                        }
+                        if top_code >= 6 {
+                            relax_len!(9);
+                        }
+                        if top_code >= 7 {
+                            relax_len!(10);
+                        }
+                        if top_code >= 8 {
+                            relax_len!(11);
+                        }
+                        let mut code = 9usize;
+                        if top_code >= 16 {
+                            relax_len!(12);
+                            relax_len!(13);
+                            relax_len!(14);
+                            relax_len!(15);
+                            relax_len!(16);
+                            relax_len!(17);
+                            relax_len!(18);
+                            relax_len!(19);
+                            code = 17;
+                        }
                         while code <= top_code {
                             let len = *HEAVY_LEN_OF.get_unchecked(code);
                             let target = i + len as usize;
                             let target_cost = dp_ptr.add(target);
                             if cost < *target_cost {
                                 *target_cost = cost;
-                                *arrivals_ptr.add(target) = Arrival {
-                                    dis,
-                                    len,
-                                    lit_run: literal_run as u64,
-                                };
+                                *arrival_len_ptr.add(target) = len;
                             }
                             code += 1;
                         }
@@ -2457,6 +2647,69 @@ where
 
         block_tokens.clear();
         let mut boundary = commit;
+        #[cfg(not(feature = "paranoid"))]
+        {
+            let arrival_len_ptr = arrival_len.as_ptr();
+            let dp_ptr = dp.as_ptr();
+            let match_dis_ptr = match_dis.as_ptr();
+            // SAFETY: backtracking only indexes committed block boundaries and
+            // match starts previously written by the hot DP.
+            unsafe {
+                while boundary > qstar {
+                    if boundary < block_start {
+                        return 0;
+                    }
+                    let arrival_index = boundary - block_start;
+                    let arrival_len = *arrival_len_ptr.add(arrival_index) as usize;
+                    if arrival_len < MIN_MATCH_LEN {
+                        return 0;
+                    }
+                    let Some(match_start) = boundary.checked_sub(arrival_len) else {
+                        return 0;
+                    };
+                    if match_start < block_start {
+                        return 0;
+                    }
+                    let Some(literal_cost) = (*dp_ptr.add(arrival_index)).checked_sub(4) else {
+                        return 0;
+                    };
+                    let mut prev_boundary = match_start;
+                    let mut found = false;
+                    loop {
+                        let run = match_start - prev_boundary;
+                        let prev_cost = *dp_ptr.add(prev_boundary - block_start);
+                        if prev_cost != HEAVY_DP_INF
+                            && prev_cost + run + heavy_literal_extras(run) == literal_cost
+                        {
+                            found = true;
+                            break;
+                        }
+                        if prev_boundary == block_start {
+                            break;
+                        }
+                        prev_boundary -= 1;
+                    }
+                    if !found {
+                        let run = match_start - qstar;
+                        if qstar <= block_start
+                            && qstar_cost + run + heavy_literal_extras(run) == literal_cost
+                        {
+                            prev_boundary = qstar;
+                        } else {
+                            return 0;
+                        }
+                    }
+                    let origin_index = match_start - block_start;
+                    block_tokens.push(TokenRecord {
+                        match_start,
+                        len: *arrival_len_ptr.add(arrival_index),
+                        dis: *match_dis_ptr.add(origin_index),
+                    });
+                    boundary = prev_boundary;
+                }
+            }
+        }
+        #[cfg(feature = "paranoid")]
         while boundary > qstar {
             if boundary < block_start {
                 return 0;

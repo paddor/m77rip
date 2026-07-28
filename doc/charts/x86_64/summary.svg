@@ -25,18 +25,18 @@ L-1
 <text x="27" y="243" dy="0.5ex" text-anchor="middle" font-family="sans-serif" font-size="8.870967741935484" opacity="1" fill="#E6EDF3" font-weight="bold" transform="rotate(270, 27, 243)">
 seconds / GB
 </text>
-<rect x="135" y="347" width="34" height="61" opacity="1" fill="#F87171" stroke="none"/>
-<rect x="135" y="210" width="34" height="137" opacity="1" fill="#C45050" stroke="none"/>
-<rect x="135" y="204" width="34" height="6" opacity="1" fill="#F87171" stroke="none"/>
+<rect x="135" y="348" width="34" height="60" opacity="1" fill="#F87171" stroke="none"/>
+<rect x="135" y="211" width="34" height="137" opacity="1" fill="#C45050" stroke="none"/>
+<rect x="135" y="205" width="34" height="6" opacity="1" fill="#F87171" stroke="none"/>
 <rect x="174" y="317" width="34" height="91" opacity="1" fill="#F472B6" stroke="none"/>
 <rect x="174" y="183" width="34" height="134" opacity="1" fill="#C05A92" stroke="none"/>
 <rect x="174" y="168" width="34" height="15" opacity="1" fill="#F472B6" stroke="none"/>
 <text x="171" y="425" dy="0.5ex" text-anchor="middle" font-family="sans-serif" font-size="8.870967741935484" opacity="1" fill="#E6EDF3" font-weight="bold">
 Compressible
 </text>
-<rect x="337" y="368" width="34" height="40" opacity="1" fill="#F87171" stroke="none"/>
-<rect x="337" y="184" width="34" height="184" opacity="1" fill="#C45050" stroke="none"/>
-<rect x="337" y="178" width="34" height="6" opacity="1" fill="#F87171" stroke="none"/>
+<rect x="337" y="369" width="34" height="39" opacity="1" fill="#F87171" stroke="none"/>
+<rect x="337" y="185" width="34" height="184" opacity="1" fill="#C45050" stroke="none"/>
+<rect x="337" y="179" width="34" height="6" opacity="1" fill="#F87171" stroke="none"/>
 <rect x="376" y="317" width="34" height="91" opacity="1" fill="#F472B6" stroke="none"/>
 <rect x="376" y="136" width="34" height="181" opacity="1" fill="#C05A92" stroke="none"/>
 <rect x="376" y="121" width="34" height="15" opacity="1" fill="#F472B6" stroke="none"/>
@@ -65,9 +65,9 @@ seconds / GB
 <rect x="115" y="649" width="34" height="154" opacity="1" fill="#60A5FA" stroke="none"/>
 <rect x="115" y="611" width="34" height="38" opacity="1" fill="#4680C4" stroke="none"/>
 <rect x="115" y="609" width="34" height="2" opacity="1" fill="#60A5FA" stroke="none"/>
-<rect x="154" y="721" width="34" height="82" opacity="1" fill="#F87171" stroke="none"/>
-<rect x="154" y="682" width="34" height="39" opacity="1" fill="#C45050" stroke="none"/>
-<rect x="154" y="680" width="34" height="2" opacity="1" fill="#F87171" stroke="none"/>
+<rect x="154" y="720" width="34" height="83" opacity="1" fill="#F87171" stroke="none"/>
+<rect x="154" y="681" width="34" height="39" opacity="1" fill="#C45050" stroke="none"/>
+<rect x="154" y="679" width="34" height="2" opacity="1" fill="#F87171" stroke="none"/>
 <rect x="193" y="669" width="34" height="134" opacity="1" fill="#F472B6" stroke="none"/>
 <rect x="193" y="630" width="34" height="39" opacity="1" fill="#C05A92" stroke="none"/>
 <rect x="193" y="625" width="34" height="5" opacity="1" fill="#F472B6" stroke="none"/>
@@ -78,8 +78,8 @@ Compressible
 <rect x="318" y="518" width="34" height="69" opacity="1" fill="#4680C4" stroke="none"/>
 <rect x="318" y="516" width="34" height="2" opacity="1" fill="#60A5FA" stroke="none"/>
 <rect x="357" y="688" width="34" height="115" opacity="1" fill="#F87171" stroke="none"/>
-<rect x="357" y="615" width="34" height="73" opacity="1" fill="#C45050" stroke="none"/>
-<rect x="357" y="613" width="34" height="2" opacity="1" fill="#F87171" stroke="none"/>
+<rect x="357" y="614" width="34" height="74" opacity="1" fill="#C45050" stroke="none"/>
+<rect x="357" y="613" width="34" height="1" opacity="1" fill="#F87171" stroke="none"/>
 <rect x="396" y="633" width="34" height="170" opacity="1" fill="#F472B6" stroke="none"/>
 <rect x="396" y="560" width="34" height="73" opacity="1" fill="#C05A92" stroke="none"/>
 <rect x="396" y="556" width="34" height="4" opacity="1" fill="#F472B6" stroke="none"/>
@@ -104,9 +104,9 @@ seconds / GB
 <rect x="115" y="1099" width="34" height="99" opacity="1" fill="#60A5FA" stroke="none"/>
 <rect x="115" y="1075" width="34" height="24" opacity="1" fill="#4680C4" stroke="none"/>
 <rect x="115" y="1074" width="34" height="1" opacity="1" fill="#60A5FA" stroke="none"/>
-<rect x="154" y="1126" width="34" height="72" opacity="1" fill="#F87171" stroke="none"/>
-<rect x="154" y="1102" width="34" height="24" opacity="1" fill="#C45050" stroke="none"/>
-<rect x="154" y="1101" width="34" height="1" opacity="1" fill="#F87171" stroke="none"/>
+<rect x="154" y="1125" width="34" height="73" opacity="1" fill="#F87171" stroke="none"/>
+<rect x="154" y="1101" width="34" height="24" opacity="1" fill="#C45050" stroke="none"/>
+<rect x="154" y="1100" width="34" height="1" opacity="1" fill="#F87171" stroke="none"/>
 <rect x="193" y="1072" width="34" height="126" opacity="1" fill="#F472B6" stroke="none"/>
 <rect x="193" y="1048" width="34" height="24" opacity="1" fill="#C05A92" stroke="none"/>
 <rect x="193" y="1045" width="34" height="3" opacity="1" fill="#F472B6" stroke="none"/>
@@ -116,9 +116,9 @@ Compressible
 <rect x="318" y="1005" width="34" height="193" opacity="1" fill="#60A5FA" stroke="none"/>
 <rect x="318" y="965" width="34" height="40" opacity="1" fill="#4680C4" stroke="none"/>
 <rect x="318" y="963" width="34" height="2" opacity="1" fill="#60A5FA" stroke="none"/>
-<rect x="357" y="1047" width="34" height="151" opacity="1" fill="#F87171" stroke="none"/>
-<rect x="357" y="1006" width="34" height="41" opacity="1" fill="#C45050" stroke="none"/>
-<rect x="357" y="1004" width="34" height="2" opacity="1" fill="#F87171" stroke="none"/>
+<rect x="357" y="1046" width="34" height="152" opacity="1" fill="#F87171" stroke="none"/>
+<rect x="357" y="1005" width="34" height="41" opacity="1" fill="#C45050" stroke="none"/>
+<rect x="357" y="1003" width="34" height="2" opacity="1" fill="#F87171" stroke="none"/>
 <rect x="396" y="957" width="34" height="241" opacity="1" fill="#F472B6" stroke="none"/>
 <rect x="396" y="916" width="34" height="41" opacity="1" fill="#C05A92" stroke="none"/>
 <rect x="396" y="911" width="34" height="5" opacity="1" fill="#F472B6" stroke="none"/>
@@ -128,47 +128,55 @@ Incompressible
 <text x="733" y="60" dy="0.5ex" text-anchor="middle" font-family="sans-serif" font-size="10.483870967741936" opacity="1" fill="#E6EDF3" font-weight="bold">
 L2
 </text>
-<polyline fill="none" opacity="1" stroke="#21262D" stroke-width="1" points="530,949 935,949 "/>
-<text x="523" y="949" dy="0.5ex" text-anchor="end" font-family="sans-serif" font-size="10.483870967741936" opacity="1" fill="#7D8590">
-50
+<polyline fill="none" opacity="1" stroke="#21262D" stroke-width="1" points="530,1012 935,1012 "/>
+<text x="523" y="1012" dy="0.5ex" text-anchor="end" font-family="sans-serif" font-size="10.483870967741936" opacity="1" fill="#7D8590">
+20
 </text>
-<polyline fill="none" opacity="1" stroke="#21262D" stroke-width="1" points="530,699 935,699 "/>
-<text x="523" y="699" dy="0.5ex" text-anchor="end" font-family="sans-serif" font-size="10.483870967741936" opacity="1" fill="#7D8590">
+<polyline fill="none" opacity="1" stroke="#21262D" stroke-width="1" points="530,826 935,826 "/>
+<text x="523" y="826" dy="0.5ex" text-anchor="end" font-family="sans-serif" font-size="10.483870967741936" opacity="1" fill="#7D8590">
+40
+</text>
+<polyline fill="none" opacity="1" stroke="#21262D" stroke-width="1" points="530,640 935,640 "/>
+<text x="523" y="640" dy="0.5ex" text-anchor="end" font-family="sans-serif" font-size="10.483870967741936" opacity="1" fill="#7D8590">
+60
+</text>
+<polyline fill="none" opacity="1" stroke="#21262D" stroke-width="1" points="530,454 935,454 "/>
+<text x="523" y="454" dy="0.5ex" text-anchor="end" font-family="sans-serif" font-size="10.483870967741936" opacity="1" fill="#7D8590">
+80
+</text>
+<polyline fill="none" opacity="1" stroke="#21262D" stroke-width="1" points="530,268 935,268 "/>
+<text x="523" y="268" dy="0.5ex" text-anchor="end" font-family="sans-serif" font-size="10.483870967741936" opacity="1" fill="#7D8590">
 100
 </text>
-<polyline fill="none" opacity="1" stroke="#21262D" stroke-width="1" points="530,450 935,450 "/>
-<text x="523" y="450" dy="0.5ex" text-anchor="end" font-family="sans-serif" font-size="10.483870967741936" opacity="1" fill="#7D8590">
-150
-</text>
-<polyline fill="none" opacity="1" stroke="#21262D" stroke-width="1" points="530,201 935,201 "/>
-<text x="523" y="201" dy="0.5ex" text-anchor="end" font-family="sans-serif" font-size="10.483870967741936" opacity="1" fill="#7D8590">
-200
+<polyline fill="none" opacity="1" stroke="#21262D" stroke-width="1" points="530,82 935,82 "/>
+<text x="523" y="82" dy="0.5ex" text-anchor="end" font-family="sans-serif" font-size="10.483870967741936" opacity="1" fill="#7D8590">
+120
 </text>
 <polyline fill="none" opacity="1" stroke="#30363D" stroke-width="2" points="530,1198 935,1198 "/>
 <text x="487" y="638" dy="0.5ex" text-anchor="middle" font-family="sans-serif" font-size="8.870967741935484" opacity="1" fill="#E6EDF3" font-weight="bold" transform="rotate(270, 487, 638)">
 seconds / GB
 </text>
-<rect x="575" y="148" width="34" height="1050" opacity="1" fill="#60A5FA" stroke="none"/>
-<rect x="575" y="129" width="34" height="19" opacity="1" fill="#4680C4" stroke="none"/>
-<rect x="575" y="128" width="34" height="1" opacity="1" fill="#60A5FA" stroke="none"/>
-<rect x="614" y="907" width="34" height="291" opacity="1" fill="#F87171" stroke="none"/>
-<rect x="614" y="887" width="34" height="20" opacity="1" fill="#C45050" stroke="none"/>
-<rect x="614" y="886" width="34" height="1" opacity="1" fill="#F87171" stroke="none"/>
-<rect x="653" y="906" width="34" height="292" opacity="1" fill="#F472B6" stroke="none"/>
-<rect x="653" y="887" width="34" height="19" opacity="1" fill="#C05A92" stroke="none"/>
-<rect x="653" y="882" width="34" height="5" opacity="1" fill="#F472B6" stroke="none"/>
+<rect x="575" y="175" width="34" height="1023" opacity="1" fill="#60A5FA" stroke="none"/>
+<rect x="575" y="140" width="34" height="35" opacity="1" fill="#4680C4" stroke="none"/>
+<rect x="575" y="138" width="34" height="2" opacity="1" fill="#60A5FA" stroke="none"/>
+<rect x="614" y="487" width="34" height="711" opacity="1" fill="#F87171" stroke="none"/>
+<rect x="614" y="452" width="34" height="35" opacity="1" fill="#C45050" stroke="none"/>
+<rect x="614" y="450" width="34" height="2" opacity="1" fill="#F87171" stroke="none"/>
+<rect x="653" y="654" width="34" height="544" opacity="1" fill="#F472B6" stroke="none"/>
+<rect x="653" y="618" width="34" height="36" opacity="1" fill="#C05A92" stroke="none"/>
+<rect x="653" y="609" width="34" height="9" opacity="1" fill="#F472B6" stroke="none"/>
 <text x="631" y="1215" dy="0.5ex" text-anchor="middle" font-family="sans-serif" font-size="8.870967741935484" opacity="1" fill="#E6EDF3" font-weight="bold">
 Compressible
 </text>
-<rect x="778" y="147" width="34" height="1051" opacity="1" fill="#60A5FA" stroke="none"/>
-<rect x="778" y="112" width="34" height="35" opacity="1" fill="#4680C4" stroke="none"/>
-<rect x="778" y="111" width="34" height="1" opacity="1" fill="#60A5FA" stroke="none"/>
-<rect x="817" y="917" width="34" height="281" opacity="1" fill="#F87171" stroke="none"/>
-<rect x="817" y="882" width="34" height="35" opacity="1" fill="#C45050" stroke="none"/>
-<rect x="817" y="880" width="34" height="2" opacity="1" fill="#F87171" stroke="none"/>
-<rect x="856" y="919" width="34" height="279" opacity="1" fill="#F472B6" stroke="none"/>
-<rect x="856" y="884" width="34" height="35" opacity="1" fill="#C05A92" stroke="none"/>
-<rect x="856" y="878" width="34" height="6" opacity="1" fill="#F472B6" stroke="none"/>
+<rect x="778" y="177" width="34" height="1021" opacity="1" fill="#60A5FA" stroke="none"/>
+<rect x="778" y="113" width="34" height="64" opacity="1" fill="#4680C4" stroke="none"/>
+<rect x="778" y="111" width="34" height="2" opacity="1" fill="#60A5FA" stroke="none"/>
+<rect x="817" y="435" width="34" height="763" opacity="1" fill="#F87171" stroke="none"/>
+<rect x="817" y="371" width="34" height="64" opacity="1" fill="#C45050" stroke="none"/>
+<rect x="817" y="368" width="34" height="3" opacity="1" fill="#F87171" stroke="none"/>
+<rect x="856" y="678" width="34" height="520" opacity="1" fill="#F472B6" stroke="none"/>
+<rect x="856" y="613" width="34" height="65" opacity="1" fill="#C05A92" stroke="none"/>
+<rect x="856" y="601" width="34" height="12" opacity="1" fill="#F472B6" stroke="none"/>
 <text x="834" y="1215" dy="0.5ex" text-anchor="middle" font-family="sans-serif" font-size="8.870967741935484" opacity="1" fill="#E6EDF3" font-weight="bold">
 Incompressible
 </text>

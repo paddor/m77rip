@@ -1,6 +1,6 @@
 #[cfg(feature = "paranoid")]
 const EMPTY: i32 = -1;
-const PREFETCH_DISTANCE: usize = 64;
+const PREFETCH_DISTANCE: usize = 80;
 #[cfg(feature = "paranoid")]
 const PREFETCH_CURSOR_DISTANCE: usize = 5;
 
@@ -8,16 +8,7 @@ const PREFETCH_CURSOR_DISTANCE: usize = 5;
 use core::arch::x86_64::{_MM_HINT_T0, _mm_prefetch};
 
 #[cfg(not(feature = "paranoid"))]
-use libsais::SuffixArrayConstruction;
-
-#[cfg(all(not(feature = "paranoid"), target_arch = "x86_64"))]
-#[inline(always)]
-fn prefetch<T>(slice: &[T], index: usize) {
-    if index < slice.len() {
-        // SAFETY: guarded by the bounds check. Prefetch only hints cache.
-        unsafe { _mm_prefetch(slice.as_ptr().add(index).cast::<i8>(), _MM_HINT_T0) };
-    }
-}
+use libsais::{SuffixArrayConstruction, context::Context, typestate::SingleThreaded};
 
 #[cfg(any(feature = "paranoid", not(target_arch = "x86_64")))]
 #[inline(always)]
@@ -49,7 +40,7 @@ pub(crate) struct SaisWorkspace {
     #[cfg(feature = "paranoid")]
     bkt: Vec<u32>,
     #[cfg(not(feature = "paranoid"))]
-    freq: [i32; 256],
+    ctx: Context<u8, i32, SingleThreaded>,
 }
 
 impl SaisWorkspace {
@@ -68,7 +59,7 @@ impl SaisWorkspace {
             #[cfg(feature = "paranoid")]
             bkt: Vec::new(),
             #[cfg(not(feature = "paranoid"))]
-            freq: [0; 256],
+            ctx: Context::new_single_threaded(),
         }
     }
 
@@ -77,7 +68,7 @@ impl SaisWorkspace {
         &mut self,
         input: &[u8],
         sa: &mut [i32],
-        rank: &mut [i32],
+        rank: &mut [u32],
     ) {
         debug_assert_eq!(input.len(), sa.len());
         debug_assert_eq!(input.len(), rank.len());
@@ -85,26 +76,32 @@ impl SaisWorkspace {
             return;
         }
 
-        self.freq.fill(0);
-        for &byte in input {
-            self.freq[byte as usize] += 1;
-        }
-
-        let mut construction = SuffixArrayConstruction::for_text(input)
+        SuffixArrayConstruction::for_text(input)
             .in_borrowed_buffer(sa)
-            .single_threaded();
-        // SAFETY: `self.freq` was just computed from exactly `input`.
-        construction = unsafe { construction.with_frequency_table(&mut self.freq) };
-        construction
+            .single_threaded()
+            .with_context(&mut self.ctx)
             .run()
             .expect("libsais suffix-array construction failed");
 
-        for (i, &pos) in sa.iter().enumerate() {
-            if i + PREFETCH_DISTANCE < sa.len() {
-                prefetch(rank, sa[i + PREFETCH_DISTANCE] as usize);
+        let sa_ptr = sa.as_ptr();
+        let rank_ptr = rank.as_mut_ptr();
+        let len = sa.len();
+        for i in 0..len {
+            // SAFETY: `i` is in bounds and libsais wrote a valid suffix
+            // permutation into `sa`.
+            unsafe {
+                if i + PREFETCH_DISTANCE < len {
+                    let next = *sa_ptr.add(i + PREFETCH_DISTANCE);
+                    debug_assert!(next >= 0);
+                    #[cfg(target_arch = "x86_64")]
+                    _mm_prefetch(rank_ptr.add(next as u32 as usize).cast::<i8>(), _MM_HINT_T0);
+                    #[cfg(not(target_arch = "x86_64"))]
+                    prefetch(rank, next as u32 as usize);
+                }
+                let pos = *sa_ptr.add(i);
+                debug_assert!(pos >= 0);
+                *rank_ptr.add(pos as u32 as usize) = i as u32;
             }
-            debug_assert!(pos >= 0);
-            rank[pos as usize] = i as i32;
         }
     }
 
@@ -113,7 +110,7 @@ impl SaisWorkspace {
         &mut self,
         input: &[u8],
         sa: &mut [i32],
-        rank: &mut [i32],
+        rank: &mut [u32],
     ) {
         debug_assert_eq!(input.len(), sa.len());
         debug_assert_eq!(input.len(), rank.len());
@@ -142,7 +139,7 @@ impl SaisWorkspace {
                 prefetch(rank, sa[i + PREFETCH_DISTANCE] as usize);
             }
             debug_assert!(pos >= 0);
-            rank[pos as usize] = i as i32;
+            rank[pos as usize] = i as u32;
         }
     }
 
@@ -435,10 +432,10 @@ mod tests {
     fn suffix_array(input: &[u8]) -> Vec<i32> {
         let mut workspace = SaisWorkspace::new();
         let mut sa = vec![0; input.len()];
-        let mut rank = vec![0; input.len()];
+        let mut rank = vec![0u32; input.len()];
         workspace.suffix_array_with_rank(input, &mut sa, &mut rank);
         for (i, &pos) in sa.iter().enumerate() {
-            assert_eq!(rank[pos as usize], i as i32);
+            assert_eq!(rank[pos as usize], i as u32);
         }
         sa
     }
