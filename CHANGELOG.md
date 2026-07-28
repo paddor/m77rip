@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.1.6] - 2026-07-29
+
 - Corrected the paranoid level `2` README benchmark rows after refreshing the
   stale cache entries from before the misa77 v0.5 encoder port.
 - Optimized paranoid level `2` suffix-array construction and workspace reuse
