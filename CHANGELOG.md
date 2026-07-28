@@ -4,6 +4,15 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.1.5] - 2026-07-28
+
+- Ported level `2` compression to the misa77 v0.5 suffix-array matcher and
+  exact block-DP parser.
+- Updated the vendored C++ reference to misa77 v0.5.0 and added level `2`
+  byte-parity coverage against it.
+- Refreshed README performance tables and the summary chart from current
+  1 MiB Silesia benchmark cache.
+
 ## [0.1.4] - 2026-07-23
 
 - Optimized misa77-compatible encoder hot paths without changing encoded sizes

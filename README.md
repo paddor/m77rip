@@ -61,27 +61,27 @@ better. Level `-1` has no C++ misa77 peer, so it compares against C++ level 0.
 
 | Level | Corpus | Encode MB/s (vs misa77) | Decode MB/s (vs misa77) | Ratio (vs misa77) |
 |-------|--------|--------------------------|--------------------------|-------------------|
-| `L-1` | Compressible | 384 (5.97x) | 3639 (0.64x) | 1.63 (0.64x) |
-| `L-1` | Incompressible | 618 (14.43x) | 4488 (0.68x) | 1.18 (0.88x) |
-| `L0` | Compressible | 122 (1.90x) | 5188 (0.91x) | 2.49 (0.98x) |
-| `L0` | Incompressible | 89.9 (2.10x) | 5939 (0.90x) | 1.27 (0.94x) |
-| `L1` | Compressible | 84.6 (1.33x) | 5545 (1.10x) | 2.64 (0.98x) |
-| `L1` | Incompressible | 40.0 (1.33x) | 3114 (1.16x) | 1.49 (0.99x) |
-| `L2` | Compressible | 20.4 (3.48x) | 4781 (0.90x) | 2.82 (0.97x) |
-| `L2` | Incompressible | 18.3 (2.79x) | 3094 (0.91x) | 1.50 (0.99x) |
+| `L-1` | Compressible | 389 (5.96x) | 3519 (0.62x) | 1.63 (0.64x) |
+| `L-1` | Incompressible | 627 (13.77x) | 4383 (0.65x) | 1.18 (0.88x) |
+| `L0` | Compressible | 121 (1.85x) | 5187 (0.91x) | 2.49 (0.98x) |
+| `L0` | Incompressible | 87.4 (1.92x) | 5867 (0.87x) | 1.27 (0.94x) |
+| `L1` | Compressible | 89.0 (1.37x) | 5542 (1.10x) | 2.64 (0.98x) |
+| `L1` | Incompressible | 40.5 (1.27x) | 2997 (1.11x) | 1.49 (0.99x) |
+| `L2` | Compressible | 13.1 (1.44x) | 4731 (0.90x) | 2.98 (1.00x) |
+| `L2` | Incompressible | 12.2 (1.34x) | 2917 (0.85x) | 1.54 (1.00x) |
 
 ### Paranoid build (`--features paranoid`, zero unsafe)
 
 | Level | Corpus | Encode MB/s (vs misa77) | Decode MB/s (vs misa77) | Ratio (vs misa77) |
 |-------|--------|--------------------------|--------------------------|-------------------|
-| `L-1` | Compressible | 252 (3.91x) | 1309 (0.23x) | 1.66 (0.65x) |
-| `L-1` | Incompressible | 241 (5.64x) | 1410 (0.21x) | 1.20 (0.89x) |
-| `L0` | Compressible | 71.9 (1.12x) | 1724 (0.30x) | 2.49 (0.98x) |
-| `L0` | Incompressible | 60.1 (1.40x) | 2574 (0.39x) | 1.27 (0.94x) |
-| `L1` | Compressible | 45.3 (0.71x) | 1842 (0.36x) | 2.64 (0.98x) |
-| `L1` | Incompressible | 22.9 (0.77x) | 1095 (0.41x) | 1.49 (0.99x) |
-| `L2` | Compressible | 19.5 (3.32x) | 1296 (0.24x) | 2.82 (0.97x) |
-| `L2` | Incompressible | 17.1 (2.60x) | 857 (0.25x) | 1.50 (0.99x) |
+| `L-1` | Compressible | 249 (3.81x) | 1466 (0.26x) | 1.66 (0.65x) |
+| `L-1` | Incompressible | 239 (5.25x) | 1560 (0.23x) | 1.20 (0.89x) |
+| `L0` | Compressible | 72.7 (1.11x) | 1949 (0.34x) | 2.49 (0.98x) |
+| `L0` | Incompressible | 61.2 (1.34x) | 2861 (0.42x) | 1.27 (0.94x) |
+| `L1` | Compressible | 50.0 (0.77x) | 2060 (0.41x) | 2.64 (0.98x) |
+| `L1` | Incompressible | 25.6 (0.80x) | 1240 (0.46x) | 1.49 (0.99x) |
+| `L2` | Compressible | 20.8 (2.28x) | 1230 (0.23x) | 2.82 (0.95x) |
+| `L2` | Incompressible | 19.4 (2.14x) | 811 (0.24x) | 1.50 (0.98x) |
 
 ## `no_std` and 32-bit support
 
@@ -104,7 +104,7 @@ The encoder requires `std` and has only been tested on 64-bit targets.
 
 `compress_level` accepts levels `-1`, `0`, `1`, and `2`. Level `-1` is
 fastest, level `0` is the C++-ratio middle ground, level `1` favors ratio,
-and level `2` writes the misa77 v0.4 heavy format.
+and level `2` writes misa77 v0.5 heavy-format streams.
 
 ## License
 
