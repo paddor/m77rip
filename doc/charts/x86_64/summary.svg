@@ -162,9 +162,9 @@ seconds / GB
 <rect x="614" y="487" width="34" height="711" opacity="1" fill="#F87171" stroke="none"/>
 <rect x="614" y="452" width="34" height="35" opacity="1" fill="#C45050" stroke="none"/>
 <rect x="614" y="450" width="34" height="2" opacity="1" fill="#F87171" stroke="none"/>
-<rect x="653" y="654" width="34" height="544" opacity="1" fill="#F472B6" stroke="none"/>
-<rect x="653" y="618" width="34" height="36" opacity="1" fill="#C05A92" stroke="none"/>
-<rect x="653" y="609" width="34" height="9" opacity="1" fill="#F472B6" stroke="none"/>
+<rect x="653" y="241" width="34" height="957" opacity="1" fill="#F472B6" stroke="none"/>
+<rect x="653" y="206" width="34" height="35" opacity="1" fill="#C05A92" stroke="none"/>
+<rect x="653" y="197" width="34" height="9" opacity="1" fill="#F472B6" stroke="none"/>
 <text x="631" y="1215" dy="0.5ex" text-anchor="middle" font-family="sans-serif" font-size="8.870967741935484" opacity="1" fill="#E6EDF3" font-weight="bold">
 Compressible
 </text>
@@ -174,9 +174,9 @@ Compressible
 <rect x="817" y="435" width="34" height="763" opacity="1" fill="#F87171" stroke="none"/>
 <rect x="817" y="371" width="34" height="64" opacity="1" fill="#C45050" stroke="none"/>
 <rect x="817" y="368" width="34" height="3" opacity="1" fill="#F87171" stroke="none"/>
-<rect x="856" y="678" width="34" height="520" opacity="1" fill="#F472B6" stroke="none"/>
-<rect x="856" y="613" width="34" height="65" opacity="1" fill="#C05A92" stroke="none"/>
-<rect x="856" y="601" width="34" height="12" opacity="1" fill="#F472B6" stroke="none"/>
+<rect x="856" y="311" width="34" height="887" opacity="1" fill="#F472B6" stroke="none"/>
+<rect x="856" y="247" width="34" height="64" opacity="1" fill="#C05A92" stroke="none"/>
+<rect x="856" y="235" width="34" height="12" opacity="1" fill="#F472B6" stroke="none"/>
 <text x="834" y="1215" dy="0.5ex" text-anchor="middle" font-family="sans-serif" font-size="8.870967741935484" opacity="1" fill="#E6EDF3" font-weight="bold">
 Incompressible
 </text>

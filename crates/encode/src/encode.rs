@@ -467,15 +467,27 @@ impl HeavyLiveSet {
     }
 
     #[cfg(feature = "paranoid")]
-    #[inline]
+    #[inline(always)]
     fn set(&mut self, index: usize) {
-        self.l0[index >> 6] |= 1u64 << (index & 63);
-        self.l1[index >> 12] |= 1u64 << ((index >> 6) & 63);
+        let word0 = index >> 6;
+        let old0 = self.l0[word0];
+        self.l0[word0] = old0 | (1u64 << (index & 63));
+        if old0 != 0 {
+            return;
+        }
+
+        let word1 = index >> 12;
+        let old1 = self.l1[word1];
+        self.l1[word1] = old1 | (1u64 << ((index >> 6) & 63));
+        if old1 != 0 {
+            return;
+        }
+
         self.l2[index >> 18] |= 1u64 << ((index >> 12) & 63);
     }
 
     #[cfg(feature = "paranoid")]
-    #[inline]
+    #[inline(always)]
     fn clear(&mut self, index: usize) {
         let word0 = index >> 6;
         self.l0[word0] &= !(1u64 << (index & 63));
@@ -549,7 +561,7 @@ impl HeavyLiveSet {
     }
 
     #[cfg(feature = "paranoid")]
-    #[inline]
+    #[inline(always)]
     fn prev(&self, index: usize) -> Option<usize> {
         let mut word0 = index >> 6;
         let bit0 = index & 63;
@@ -587,7 +599,7 @@ impl HeavyLiveSet {
     }
 
     #[cfg(feature = "paranoid")]
-    #[inline]
+    #[inline(always)]
     fn next(&self, index: usize) -> Option<usize> {
         let mut word0 = index >> 6;
         let bit0 = index & 63;
@@ -765,7 +777,7 @@ fn high_bit_index(bits: u64) -> usize {
     bits.leading_zeros() as usize ^ 63
 }
 
-#[inline]
+#[inline(always)]
 fn heavy_literal_extras(run: usize) -> usize {
     if run < HEAVY_TOKEN_LIT_MAX {
         0
@@ -1157,14 +1169,6 @@ fn heavy_raw(src: &[u8], dst: &mut [u8]) -> usize {
     dlpos + src_size
 }
 
-#[cfg(feature = "paranoid")]
-#[derive(Clone, Copy, Default)]
-struct HeavyArrival {
-    dis: u32,
-    len: u8,
-    lit_run: u64,
-}
-
 #[derive(Clone, Copy)]
 struct HeavyTokenRecord {
     match_start: usize,
@@ -1180,9 +1184,6 @@ struct HeavyWorkspace {
     max_len: Vec<u8>,
     match_dis: Vec<u32>,
     dp: Vec<usize>,
-    #[cfg(feature = "paranoid")]
-    arrivals: Vec<HeavyArrival>,
-    #[cfg(not(feature = "paranoid"))]
     arrival_len: Vec<u8>,
     block_tokens: Vec<HeavyTokenRecord>,
 }
@@ -1197,9 +1198,6 @@ impl HeavyWorkspace {
             max_len: Vec::new(),
             match_dis: Vec::new(),
             dp: Vec::new(),
-            #[cfg(feature = "paranoid")]
-            arrivals: Vec::new(),
-            #[cfg(not(feature = "paranoid"))]
             arrival_len: Vec::new(),
             block_tokens: Vec::new(),
         }
@@ -1207,6 +1205,12 @@ impl HeavyWorkspace {
 }
 
 #[cfg(all(not(feature = "paranoid"), feature = "std"))]
+std::thread_local! {
+    static HEAVY_WORKSPACE: core::cell::RefCell<HeavyWorkspace> =
+        core::cell::RefCell::new(HeavyWorkspace::new());
+}
+
+#[cfg(all(feature = "paranoid", feature = "std"))]
 std::thread_local! {
     static HEAVY_WORKSPACE: core::cell::RefCell<HeavyWorkspace> =
         core::cell::RefCell::new(HeavyWorkspace::new());
@@ -1510,10 +1514,8 @@ fn heavy_find_matches<F>(
         let rank_pos = rank[pos - seg_start] as usize;
         let mut best_len = 0usize;
         let mut best_dis = 0u32;
-        let mut consider = |candidate_rank: Option<usize>| {
-            let Some(candidate_rank) = candidate_rank else {
-                return;
-            };
+
+        if let Some(candidate_rank) = live.prev(rank_pos) {
             let candidate = seg_start + sa[candidate_rank] as u32 as usize;
             debug_assert!(candidate <= pos - HEAVY_MIN_DISTANCE);
             let len = lcp_at(src, pos, candidate, limit);
@@ -1521,9 +1523,16 @@ fn heavy_find_matches<F>(
                 best_len = len;
                 best_dis = (pos - candidate) as u32;
             }
-        };
-        consider(live.prev(rank_pos));
-        consider(live.next(rank_pos));
+        }
+        if let Some(candidate_rank) = live.next(rank_pos) {
+            let candidate = seg_start + sa[candidate_rank] as u32 as usize;
+            debug_assert!(candidate <= pos - HEAVY_MIN_DISTANCE);
+            let len = lcp_at(src, pos, candidate, limit);
+            if len > best_len {
+                best_len = len;
+                best_dis = (pos - candidate) as u32;
+            }
+        }
 
         if best_len >= MIN_MATCH_LEN {
             max_len[block_pos] = best_len as u8;
@@ -2307,9 +2316,33 @@ unsafe fn heavy_compress_avx2_with_workspace(
 #[cfg(feature = "paranoid")]
 #[inline(always)]
 fn heavy_compress(src: &[u8], dst: &mut [u8]) -> usize {
-    let mut workspace = HeavyWorkspace::new();
+    #[cfg(feature = "std")]
+    {
+        HEAVY_WORKSPACE.with(|cell| match cell.try_borrow_mut() {
+            Ok(mut workspace) => heavy_compress_paranoid_with_workspace(&mut workspace, src, dst),
+            Err(_) => {
+                let mut workspace = HeavyWorkspace::new();
+                heavy_compress_paranoid_with_workspace(&mut workspace, src, dst)
+            }
+        })
+    }
+
+    #[cfg(not(feature = "std"))]
+    {
+        let mut workspace = HeavyWorkspace::new();
+        heavy_compress_paranoid_with_workspace(&mut workspace, src, dst)
+    }
+}
+
+#[cfg(feature = "paranoid")]
+#[inline(always)]
+fn heavy_compress_paranoid_with_workspace(
+    workspace: &mut HeavyWorkspace,
+    src: &[u8],
+    dst: &mut [u8],
+) -> usize {
     heavy_compress_body(
-        &mut workspace,
+        workspace,
         src,
         dst,
         |src, sa, rank, live, max_len, match_dis, block_start, block_end, seg_start, hard_end| {
@@ -2371,8 +2404,6 @@ where
     let mut tokens = 0usize;
     let mut long_matches = 0usize;
 
-    #[cfg(feature = "paranoid")]
-    type Arrival = HeavyArrival;
     type TokenRecord = HeavyTokenRecord;
 
     let HeavyWorkspace {
@@ -2383,9 +2414,6 @@ where
         max_len,
         match_dis,
         dp,
-        #[cfg(feature = "paranoid")]
-        arrivals,
-        #[cfg(not(feature = "paranoid"))]
         arrival_len,
         block_tokens,
     } = workspace;
@@ -2435,22 +2463,10 @@ where
             hard_end,
         );
 
-        #[cfg(not(feature = "paranoid"))]
-        {
-            dp.clear();
-            dp.resize(block_len + 1, HEAVY_DP_INF);
-            if arrival_len.len() != block_len + 1 {
-                arrival_len.resize(block_len + 1, 0);
-            }
-        }
-        #[cfg(feature = "paranoid")]
-        {
-            dp.clear();
-            dp.resize(block_len + 1, HEAVY_DP_INF);
-        }
-        #[cfg(feature = "paranoid")]
-        if arrivals.len() != block_len + 1 {
-            arrivals.resize(block_len + 1, Arrival::default());
+        dp.clear();
+        dp.resize(block_len + 1, HEAVY_DP_INF);
+        if arrival_len.len() != block_len + 1 {
+            arrival_len.resize(block_len + 1, 0);
         }
 
         let mut literal_run = block_start - qstar;
@@ -2586,15 +2602,10 @@ where
                 let cost = literal_cost + 4;
                 let top_code = HEAVY_CODE_FLOOR[longest] as usize;
                 for &len in HEAVY_LEN_OF.iter().take(top_code + 1).skip(1) {
-                    let len = len as usize;
-                    let target = i + len;
+                    let target = i + len as usize;
                     if cost < dp[target] {
                         dp[target] = cost;
-                        arrivals[target] = Arrival {
-                            dis: match_dis[i],
-                            len: len as u8,
-                            lit_run: literal_run as u64,
-                        };
+                        arrival_len[target] = len;
                     }
                 }
             }
@@ -2714,24 +2725,51 @@ where
             if boundary < block_start {
                 return 0;
             }
-            let arrival = arrivals[boundary - block_start];
-            let arrival_len = arrival.len as usize;
-            let lit_run = arrival.lit_run as usize;
-            let Some(prev_boundary) = boundary
-                .checked_sub(arrival_len)
-                .and_then(|value| value.checked_sub(lit_run))
-            else {
+            let arrival_index = boundary - block_start;
+            let matched_len = arrival_len[arrival_index] as usize;
+            if matched_len < MIN_MATCH_LEN {
                 return 0;
             };
-            if arrival_len < MIN_MATCH_LEN
-                || (prev_boundary < block_start && prev_boundary != qstar)
-            {
+            let Some(match_start) = boundary.checked_sub(matched_len) else {
+                return 0;
+            };
+            if match_start < block_start {
                 return 0;
             }
+            let Some(literal_cost) = dp[arrival_index].checked_sub(4) else {
+                return 0;
+            };
+            let mut prev_boundary = match_start;
+            let mut found = false;
+            loop {
+                let run = match_start - prev_boundary;
+                let prev_cost = dp[prev_boundary - block_start];
+                if prev_cost != HEAVY_DP_INF
+                    && prev_cost + run + heavy_literal_extras(run) == literal_cost
+                {
+                    found = true;
+                    break;
+                }
+                if prev_boundary == block_start {
+                    break;
+                }
+                prev_boundary -= 1;
+            }
+            if !found {
+                let run = match_start - qstar;
+                if qstar <= block_start
+                    && qstar_cost + run + heavy_literal_extras(run) == literal_cost
+                {
+                    prev_boundary = qstar;
+                } else {
+                    return 0;
+                }
+            }
+            let origin_index = match_start - block_start;
             block_tokens.push(TokenRecord {
-                match_start: boundary - arrival_len,
-                len: arrival.len,
-                dis: arrival.dis,
+                match_start,
+                len: matched_len as u8,
+                dis: match_dis[origin_index],
             });
             boundary = prev_boundary;
         }

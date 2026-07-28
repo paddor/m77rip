@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+- Corrected the paranoid level `2` README benchmark rows after refreshing the
+  stale cache entries from before the misa77 v0.5 encoder port.
+- Optimized paranoid level `2` suffix-array construction and workspace reuse
+  while preserving byte-identical output.
+- Clarified paranoid safety scope: the m77rip encode/decode crates forbid
+  unsafe code, while level `2` suffix sorting uses the safe `libsais` API.
+
 ## [0.1.5] - 2026-07-28
 
 - Ported level `2` compression to the misa77 v0.5 suffix-array matcher and
