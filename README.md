@@ -44,10 +44,14 @@ assert_eq!(written, size);
 ## Performance
 
 Benchmarks use the first 1 MiB from each Silesia file, single-threaded on
-x86_64 (AVX2). Best of 10 rounds at 20 ms each. Tables report geomeans across
-all 12 files. Values in parentheses compare against vendored misa77 v0.6.0 at
-the same integer level. Encode/decode parentheses are speed ratios.
-Compression-ratio parentheses are ratio-vs-ratio values, so higher is better.
+x86_64 (AVX2). Best of 10 rounds at 20 ms each. The chart reports
+single-threaded pipeline time by level. Lower is better. Tables report
+geomeans across all 12 files. Values in parentheses compare against vendored
+misa77 v0.6.0 at the same integer level. Encode/decode parentheses are speed
+ratios. Compression-ratio parentheses are ratio-vs-ratio values, so higher is
+better.
+
+![m77rip x86_64 performance summary](https://raw.githubusercontent.com/paddor/m77rip/main/doc/charts/x86_64/summary.svg)
 
 ### Default build
 
