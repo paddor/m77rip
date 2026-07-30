@@ -20,6 +20,7 @@ const HEADER_SUBTITLE_OFFSET: i32 = 17;
 const LEGEND_ROW_H: f64 = 22.0;
 const TRANSFER_RATE: f64 = 100_000_000.0;
 const TRANSFER_LABEL: &str = "100 MB/s";
+const MISA77_LABEL: &str = "C++ misa77 v0.6.0";
 const DATASET_SUFFIX: &str = "@1MiB";
 
 const SILESIA: &[&str] = &[
@@ -257,7 +258,7 @@ impl Config {
             target: std::env::consts::ARCH.into(),
             hw_label: detect_hardware(),
             styles: vec![
-                codec("C++ misa77", "C++ misa77", 0x60a5fa, 0x4680c4),
+                codec("C++ misa77", MISA77_LABEL, 0x60a5fa, 0x4680c4),
                 codec("m77rip", "m77rip", 0xf87171, 0xc45050),
                 codec("m77rip paranoid", "m77rip paranoid", 0xf472b6, 0xc05a92),
             ],
@@ -699,7 +700,7 @@ fn draw_panel(
 fn family_style(family: &str) -> Option<&'static CodecStyle> {
     static CPP: CodecStyle = CodecStyle {
         key: "C++ misa77",
-        label: "C++ misa77",
+        label: MISA77_LABEL,
         color: RGBColor(0x60, 0xa5, 0xfa),
         dim: RGBColor(0x46, 0x80, 0xc4),
     };

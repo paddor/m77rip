@@ -280,16 +280,16 @@ Compressible
 <text x="926" y="1300" dy="0.5ex" text-anchor="middle" font-family="sans-serif" font-size="8.870967741935484" opacity="1" fill="#E6EDF3" font-weight="bold">
 Incompressible
 </text>
-<rect x="353" y="1329" width="12" height="12" opacity="1" fill="#60A5FA" stroke="none"/>
-<text x="371" y="1335" dy="0.5ex" text-anchor="start" font-family="sans-serif" font-size="8.870967741935484" opacity="1" fill="#E6EDF3">
-C++ misa77
+<rect x="328" y="1329" width="12" height="12" opacity="1" fill="#60A5FA" stroke="none"/>
+<text x="346" y="1335" dy="0.5ex" text-anchor="start" font-family="sans-serif" font-size="8.870967741935484" opacity="1" fill="#E6EDF3">
+C++ misa77 v0.6.0
 </text>
-<rect x="485" y="1329" width="12" height="12" opacity="1" fill="#F87171" stroke="none"/>
-<text x="503" y="1335" dy="0.5ex" text-anchor="start" font-family="sans-serif" font-size="8.870967741935484" opacity="1" fill="#E6EDF3">
+<rect x="509" y="1329" width="12" height="12" opacity="1" fill="#F87171" stroke="none"/>
+<text x="527" y="1335" dy="0.5ex" text-anchor="start" font-family="sans-serif" font-size="8.870967741935484" opacity="1" fill="#E6EDF3">
 m77rip
 </text>
-<rect x="589" y="1329" width="12" height="12" opacity="1" fill="#F472B6" stroke="none"/>
-<text x="607" y="1335" dy="0.5ex" text-anchor="start" font-family="sans-serif" font-size="8.870967741935484" opacity="1" fill="#E6EDF3">
+<rect x="613" y="1329" width="12" height="12" opacity="1" fill="#F472B6" stroke="none"/>
+<text x="631" y="1335" dy="0.5ex" text-anchor="start" font-family="sans-serif" font-size="8.870967741935484" opacity="1" fill="#E6EDF3">
 m77rip paranoid
 </text>
 <text x="335" y="1365" dy="0.5ex" text-anchor="start" font-family="sans-serif" font-size="8.064516129032258" opacity="1" fill="#E6EDF3">
