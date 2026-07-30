@@ -13,6 +13,8 @@ All notable changes to this project will be documented in this file.
   suffix-array parser.
 - Optimized paranoid level `3` encoding with the same safe lazy suffix-array
   parser.
+- Updated the benchmark summary chart to show all levels, with the faster
+  light levels on the left and levels `3` and `4` on the right.
 - Updated benchmark and profiling tools to accept signed compression levels.
 
 ## [0.1.6] - 2026-07-29

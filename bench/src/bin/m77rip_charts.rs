@@ -40,14 +40,19 @@ const LEVELS: &[Level] = &[
         name: "L-1",
         impls: &[
             ImplPair {
+                family: "C++ misa77",
+                compress: "C++ misa77 level -1",
+                decode: "C++ misa77 level -1",
+            },
+            ImplPair {
                 family: "m77rip",
-                compress: "m77rip compress L-1",
-                decode: "m77rip (from L-1)",
+                compress: "m77rip compress level -1",
+                decode: "m77rip (from level -1)",
             },
             ImplPair {
                 family: "m77rip paranoid",
-                compress: "m77rip paranoid compress L-1",
-                decode: "m77rip paranoid (from L-1)",
+                compress: "m77rip paranoid compress level -1",
+                decode: "m77rip paranoid (from level -1)",
             },
         ],
     },
@@ -56,18 +61,18 @@ const LEVELS: &[Level] = &[
         impls: &[
             ImplPair {
                 family: "C++ misa77",
-                compress: "C++ misa77 -0",
-                decode: "C++ misa77 -0",
+                compress: "C++ misa77 level 0",
+                decode: "C++ misa77 level 0",
             },
             ImplPair {
                 family: "m77rip",
-                compress: "m77rip compress -0",
-                decode: "m77rip (from -0)",
+                compress: "m77rip compress level 0",
+                decode: "m77rip (from level 0)",
             },
             ImplPair {
                 family: "m77rip paranoid",
-                compress: "m77rip paranoid compress -0",
-                decode: "m77rip paranoid (from -0)",
+                compress: "m77rip paranoid compress level 0",
+                decode: "m77rip paranoid (from level 0)",
             },
         ],
     },
@@ -76,18 +81,18 @@ const LEVELS: &[Level] = &[
         impls: &[
             ImplPair {
                 family: "C++ misa77",
-                compress: "C++ misa77 -1",
-                decode: "C++ misa77 -1",
+                compress: "C++ misa77 level 1",
+                decode: "C++ misa77 level 1",
             },
             ImplPair {
                 family: "m77rip",
-                compress: "m77rip compress -1",
-                decode: "m77rip (from -1)",
+                compress: "m77rip compress level 1",
+                decode: "m77rip (from level 1)",
             },
             ImplPair {
                 family: "m77rip paranoid",
-                compress: "m77rip paranoid compress -1",
-                decode: "m77rip paranoid (from -1)",
+                compress: "m77rip paranoid compress level 1",
+                decode: "m77rip paranoid (from level 1)",
             },
         ],
     },
@@ -96,18 +101,58 @@ const LEVELS: &[Level] = &[
         impls: &[
             ImplPair {
                 family: "C++ misa77",
-                compress: "C++ misa77 -2",
-                decode: "C++ misa77 -2",
+                compress: "C++ misa77 level 2",
+                decode: "C++ misa77 level 2",
             },
             ImplPair {
                 family: "m77rip",
-                compress: "m77rip compress -2",
-                decode: "m77rip (from -2)",
+                compress: "m77rip compress level 2",
+                decode: "m77rip (from level 2)",
             },
             ImplPair {
                 family: "m77rip paranoid",
-                compress: "m77rip paranoid compress -2",
-                decode: "m77rip paranoid (from -2)",
+                compress: "m77rip paranoid compress level 2",
+                decode: "m77rip paranoid (from level 2)",
+            },
+        ],
+    },
+    Level {
+        name: "L3",
+        impls: &[
+            ImplPair {
+                family: "C++ misa77",
+                compress: "C++ misa77 level 3",
+                decode: "C++ misa77 level 3",
+            },
+            ImplPair {
+                family: "m77rip",
+                compress: "m77rip compress level 3",
+                decode: "m77rip (from level 3)",
+            },
+            ImplPair {
+                family: "m77rip paranoid",
+                compress: "m77rip paranoid compress level 3",
+                decode: "m77rip paranoid (from level 3)",
+            },
+        ],
+    },
+    Level {
+        name: "L4",
+        impls: &[
+            ImplPair {
+                family: "C++ misa77",
+                compress: "C++ misa77 level 4",
+                decode: "C++ misa77 level 4",
+            },
+            ImplPair {
+                family: "m77rip",
+                compress: "m77rip compress level 4",
+                decode: "m77rip (from level 4)",
+            },
+            ImplPair {
+                family: "m77rip paranoid",
+                compress: "m77rip paranoid compress level 4",
+                decode: "m77rip paranoid (from level 4)",
             },
         ],
     },
@@ -405,17 +450,24 @@ fn draw_summary(cfg: &Config, out_dir: &Path) -> Result<(), Box<dyn Error>> {
         .map(|level| (*level, level_panel_data(&rows, level.impls)))
         .collect::<Vec<_>>();
 
-    let width = 980;
+    let width = 1080;
     let x_left = 70.0;
-    let col_gap = 55.0;
-    let plot_w = 405.0;
-    let left_plot_h = 330.0;
+    let col_gap = 60.0;
+    let plot_w = 455.0;
+    let left_plot_h = 250.0;
+    let right_plot_h = 560.0;
     let y_top = if cfg.hw_label.is_some() { 78.0 } else { 64.0 };
-    let row_stride = 395.0;
-    let right_plot_h = left_plot_h + 2.0 * row_stride;
-    let left_rows = [y_top, y_top + row_stride, y_top + 2.0 * row_stride];
+    let left_row_stride = 315.0;
+    let right_row_stride = 645.0;
+    let left_rows: [f64; 4] = [
+        y_top,
+        y_top + left_row_stride,
+        y_top + 2.0 * left_row_stride,
+        y_top + 3.0 * left_row_stride,
+    ];
+    let right_rows: [f64; 2] = [y_top, y_top + right_row_stride];
     let right_x = x_left + plot_w + col_gap;
-    let plot_bottom = y_top + right_plot_h;
+    let plot_bottom = (left_rows[3] + left_plot_h).max(right_rows[1] + right_plot_h);
     let height = (plot_bottom + 118.0) as u32;
     let path = out_dir.join("summary.svg");
     let area = root(&path, width, height)?;
@@ -430,7 +482,7 @@ fn draw_summary(cfg: &Config, out_dir: &Path) -> Result<(), Box<dyn Error>> {
         22,
     )?;
 
-    for (idx, (level, data)) in panel_data.iter().take(3).enumerate() {
+    for (idx, (level, data)) in panel_data.iter().take(4).enumerate() {
         draw_panel(
             &area,
             level.name,
@@ -444,19 +496,20 @@ fn draw_summary(cfg: &Config, out_dir: &Path) -> Result<(), Box<dyn Error>> {
             1.15,
         )?;
     }
-    let (level, data) = &panel_data[3];
-    draw_panel(
-        &area,
-        level.name,
-        level.impls,
-        data,
-        right_x,
-        y_top,
-        plot_w,
-        right_plot_h,
-        8,
-        1.03,
-    )?;
+    for (idx, (level, data)) in panel_data.iter().skip(4).enumerate() {
+        draw_panel(
+            &area,
+            level.name,
+            level.impls,
+            data,
+            right_x,
+            right_rows[idx],
+            plot_w,
+            right_plot_h,
+            6,
+            1.08,
+        )?;
+    }
 
     let leg_y = plot_bottom + 52.0;
     draw_legend(
@@ -496,7 +549,7 @@ fn require_rows(rows: &[BenchRow]) -> Result<(), Box<dyn Error>> {
     }
     let shown = missing.into_iter().take(24).collect::<Vec<_>>().join(", ");
     Err(format!(
-        "summary: missing required first-1MiB Silesia cache rows ({shown}). Run `cargo run --release --example m77rip_bench --features c-reference` first."
+        "summary: missing required first-1MiB Silesia cache rows ({shown}). Run default and paranoid `m77rip_bench` with `--features c-reference` first."
     )
     .into())
 }
