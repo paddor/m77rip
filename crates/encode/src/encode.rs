@@ -10,15 +10,18 @@ use fearless_simd::{Simd, prelude::*, u8x32};
 
 const HASH_SIZE: usize = 1 << 16;
 const HASH_MUL: u32 = 2654435761;
-const LATEST_BATCH: usize = 176;
-const LATEST_INSERTS_PER_BATCH: usize = 8;
+const HASH6_MUL: u64 = 0x9E37_79B1_85EB_CA87;
+const HASH6_MASK: u64 = (1u64 << 48) - 1;
+const LATEST_BATCH: usize = 8;
 const RING_BATCH: usize = 8;
-const LOOSE_RING_WIDTH: usize = 7;
-const DEFAULT_RING_WIDTH: usize = 11;
-const CHAIN_AFTER: usize = 8;
+const LOOSE_RING_WIDTH: usize = 16;
+const KEEN_RING_WIDTH: usize = 20;
+const BLITZ_PROBE_STEP: usize = 2;
 const SKIP_SHIFT: usize = 6;
-#[cfg(not(feature = "paranoid"))]
-const SPEED_SKIP_SHIFT: usize = 2;
+const LIGHT_REGIME_CAP: i32 = 64;
+const LIGHT_REGIME_THRESHOLD: i32 = 32;
+const LIGHT_OPTIMAL_BLOCK_SIZE: usize = 3 << 17;
+const LIGHT_OPTIMAL_PAD_LEN: usize = MAX_MATCH_LEN + 1;
 const HEAVY_BLOCK_SIZE: usize = 1 << 21;
 const HEAVY_PAD_LEN: usize = HEAVY_MAX_MATCH_LEN + 1;
 const HEAVY_DP_INF: usize = usize::MAX;
@@ -27,11 +30,11 @@ const HEAVY_NO_RANK: usize = usize::MAX;
 const HEAVY_COND_FLAG_THRESH_NUM: usize = 14;
 const HEAVY_COND_FLAG_THRESH_DEN: usize = 100;
 
-const _: () = assert!(LATEST_INSERTS_PER_BATCH == 8);
-const _: () = assert!(LATEST_INSERTS_PER_BATCH <= LATEST_BATCH);
+const _: () = assert!(LATEST_BATCH == 8);
 const _: () = assert!(RING_BATCH == 8);
-const _: () = assert!(DEFAULT_RING_WIDTH <= u8::MAX as usize + 1);
+const _: () = assert!(KEEN_RING_WIDTH <= u8::MAX as usize + 1);
 const _: () = assert!(LOOSE_RING_WIDTH <= u8::MAX as usize + 1);
+const _: () = assert!(LIGHT_OPTIMAL_BLOCK_SIZE <= u32::MAX as usize);
 const _: () = assert!(HEAVY_MIN_DISTANCE > VECTOR_WIDTH);
 const _: () = assert!(HEAVY_BLOCK_SIZE <= u32::MAX as usize);
 const _: () = assert!(HEAVY_MAX_DISTANCE <= u32::MAX as usize);
@@ -40,6 +43,11 @@ const _: () = assert!(HEAVY_MAX_MATCH_LEN <= u8::MAX as usize);
 #[inline(always)]
 fn hash4(val: u32) -> usize {
     (val.wrapping_mul(HASH_MUL) >> 16) as usize
+}
+
+#[inline(always)]
+fn hash6(val: u64) -> usize {
+    (((val & HASH6_MASK).wrapping_mul(HASH6_MUL)) >> 48) as usize
 }
 
 #[inline(always)]
@@ -56,6 +64,12 @@ fn read_u32_le(src: &[u8], pos: usize) -> u32 {
     u32::from_le_bytes(src[pos..pos + 4].try_into().unwrap())
 }
 
+#[cfg(feature = "paranoid")]
+#[inline(always)]
+fn read_u64_le(src: &[u8], pos: usize) -> u64 {
+    u64::from_le_bytes(src[pos..pos + 8].try_into().unwrap())
+}
+
 #[cfg(not(feature = "paranoid"))]
 #[inline(always)]
 unsafe fn read_u64_le(src: &[u8], pos: usize) -> u64 {
@@ -67,7 +81,7 @@ unsafe fn read_u64_le(src: &[u8], pos: usize) -> u64 {
 
 #[cfg(not(feature = "paranoid"))]
 #[inline(always)]
-unsafe fn read_u32_le_unchecked(src: &[u8], pos: usize) -> u32 {
+unsafe fn read_u32_le(src: &[u8], pos: usize) -> u32 {
     debug_assert!(pos + 4 <= src.len());
     // SAFETY: caller guarantees `pos..pos + 4` is inside `src`; unaligned
     // reads are allowed.
@@ -84,11 +98,24 @@ unsafe fn load_u8x32_unchecked<S: Simd>(simd: S, src: &[u8], pos: usize) -> u8x3
     simd.load_array_ref_u8x32(lanes)
 }
 
+#[cfg(not(feature = "paranoid"))]
+#[inline(always)]
+unsafe fn load_u8x32<S: Simd>(simd: S, src: &[u8], pos: usize) -> u8x32<S> {
+    // SAFETY: forwarded from this function's caller.
+    unsafe { load_u8x32_unchecked(simd, src, pos) }
+}
+
 #[cfg(feature = "paranoid")]
 #[inline(always)]
 fn load_u8x32_checked<S: Simd>(simd: S, src: &[u8], pos: usize) -> u8x32<S> {
     let lanes: &[u8; VECTOR_WIDTH] = src[pos..pos + VECTOR_WIDTH].try_into().unwrap();
     simd.load_array_ref_u8x32(lanes)
+}
+
+#[cfg(feature = "paranoid")]
+#[inline(always)]
+fn load_u8x32<S: Simd>(simd: S, src: &[u8], pos: usize) -> u8x32<S> {
+    load_u8x32_checked(simd, src, pos)
 }
 
 #[inline(always)]
@@ -100,13 +127,6 @@ fn lcp_loaded<S: Simd>(a: u8x32<S>, b: u8x32<S>) -> usize {
     } else {
         MAX_MATCH_LEN
     }
-}
-
-#[cfg(feature = "paranoid")]
-#[inline(always)]
-fn lcp(src: &[u8], a: usize, b: usize) -> usize {
-    let limit = MAX_MATCH_LEN.min(src.len().saturating_sub(a.max(b)));
-    lcp_portable(src, a, b, limit)
 }
 
 #[cfg(feature = "paranoid")]
@@ -177,7 +197,7 @@ pub fn compress_bound_level(src_size: usize, level: i8) -> Result<usize, Error> 
 
 #[inline]
 fn compress_bound_for_level(src_size: usize, level: i8) -> usize {
-    if level == 2 {
+    if level >= HEAVY_LEVEL_MIN {
         compress_bound_heavy(src_size)
     } else {
         compress_bound_light(src_size)
@@ -205,14 +225,14 @@ fn compress_bound_heavy(src_size: usize) -> usize {
 
 /// Compresses `input` into the misa77 stream format (level 1, default).
 pub fn compress(input: &[u8]) -> Vec<u8> {
-    let mut dst = vec![0u8; compress_bound_for_level(input.len(), 1)];
-    let written = compress_dispatch(input, &mut dst, 1);
+    let mut dst = vec![0u8; compress_bound_for_level(input.len(), DEFAULT_LEVEL)];
+    let written = compress_dispatch(input, &mut dst, DEFAULT_LEVEL);
     dst.truncate(written);
     dst
 }
 
-/// Compresses `input` at the given level (-1 = fastest, 0 = fast,
-/// 1 = default, 2 = heavy).
+/// Compresses `input` at the given level (-1..=4). Levels below 4 emit the
+/// light format; level 4 emits the heavy format.
 ///
 /// Returns [`Error::InvalidLevel`](m77rip_core::Error::InvalidLevel) for any
 /// other level.
@@ -228,14 +248,14 @@ pub fn compress_level(input: &[u8], level: i8) -> Result<Vec<u8>, Error> {
 ///
 /// Returns the number of bytes written to `dst`.
 pub fn compress_into(input: &[u8], dst: &mut [u8]) -> Result<usize, Error> {
-    let bound = compress_bound_for_level(input.len(), 1);
+    let bound = compress_bound_for_level(input.len(), DEFAULT_LEVEL);
     if dst.len() < bound {
         return Err(Error::OutputTooSmall {
             need: bound,
             have: dst.len(),
         });
     }
-    Ok(compress_dispatch(input, dst, 1))
+    Ok(compress_dispatch(input, dst, DEFAULT_LEVEL))
 }
 
 /// Compresses `input` into `dst` at the given level.
@@ -255,7 +275,7 @@ pub fn compress_into_level(input: &[u8], dst: &mut [u8], level: i8) -> Result<us
 
 #[inline]
 fn validate_level(level: i8) -> Result<(), Error> {
-    if (-1..=2).contains(&level) {
+    if (MIN_LEVEL..=MAX_LEVEL).contains(&level) {
         Ok(())
     } else {
         Err(Error::InvalidLevel { level })
@@ -265,38 +285,61 @@ fn validate_level(level: i8) -> Result<(), Error> {
 #[cfg(not(feature = "paranoid"))]
 fn compress_dispatch(src: &[u8], dst: &mut [u8], level: i8) -> usize {
     match level {
-        -1 => compress_dispatch_level_speed(src, dst),
-        0 => compress_dispatch_level0(src, dst),
-        1 => compress_dispatch_level1(src, dst),
-        2 => compress_dispatch_level2(src, dst),
+        -1 => compress_dispatch_level_blitz(src, dst),
+        0 => compress_dispatch_level_swift(src, dst),
+        1 => compress_dispatch_level_loose(src, dst),
+        2 => compress_dispatch_level_keen(src, dst),
+        3 => compress_dispatch_level_light_optimal(src, dst),
+        4 => compress_dispatch_level_heavy(src, dst),
         _ => unreachable!(),
     }
 }
 
 #[cfg(not(feature = "paranoid"))]
 #[inline(never)]
-fn compress_dispatch_level_speed(src: &[u8], dst: &mut [u8]) -> usize {
+fn compress_dispatch_level_blitz(src: &[u8], dst: &mut [u8]) -> usize {
     let level_obj = fearless_simd::Level::new();
-    fearless_simd::dispatch!(level_obj, simd => speed_compress(simd, src, dst))
+    fearless_simd::dispatch!(level_obj, simd => blitz_compress(simd, src, dst))
 }
 
 #[cfg(not(feature = "paranoid"))]
 #[inline(never)]
-fn compress_dispatch_level0(src: &[u8], dst: &mut [u8]) -> usize {
+fn compress_dispatch_level_swift(src: &[u8], dst: &mut [u8]) -> usize {
+    let level_obj = fearless_simd::Level::new();
+    fearless_simd::dispatch!(level_obj, simd => swift_compress(simd, src, dst))
+}
+
+#[cfg(not(feature = "paranoid"))]
+#[inline(never)]
+fn compress_dispatch_level_loose(src: &[u8], dst: &mut [u8]) -> usize {
     let level_obj = fearless_simd::Level::new();
     fearless_simd::dispatch!(level_obj, simd => loose_compress(simd, src, dst))
 }
 
 #[cfg(not(feature = "paranoid"))]
 #[inline(never)]
-fn compress_dispatch_level1(src: &[u8], dst: &mut [u8]) -> usize {
+fn compress_dispatch_level_keen(src: &[u8], dst: &mut [u8]) -> usize {
     let level_obj = fearless_simd::Level::new();
-    fearless_simd::dispatch!(level_obj, simd => default_compress(simd, src, dst))
+    fearless_simd::dispatch!(level_obj, simd => keen_compress(simd, src, dst))
 }
 
 #[cfg(not(feature = "paranoid"))]
 #[inline(never)]
-fn compress_dispatch_level2(src: &[u8], dst: &mut [u8]) -> usize {
+fn compress_dispatch_level_light_optimal(src: &[u8], dst: &mut [u8]) -> usize {
+    #[cfg(all(feature = "std", target_arch = "x86_64"))]
+    if std::arch::is_x86_feature_detected!("avx2") {
+        // SAFETY: Runtime feature check guarantees AVX2. Light match-finder
+        // callers keep all vector reads inside `src`.
+        return unsafe { light_optimal_compress_avx2(src, dst) };
+    }
+
+    let level_obj = fearless_simd::Level::new();
+    fearless_simd::dispatch!(level_obj, simd => light_optimal_compress(simd, src, dst))
+}
+
+#[cfg(not(feature = "paranoid"))]
+#[inline(never)]
+fn compress_dispatch_level_heavy(src: &[u8], dst: &mut [u8]) -> usize {
     #[cfg(all(feature = "std", target_arch = "x86_64"))]
     if std::arch::is_x86_feature_detected!("avx2") {
         // SAFETY: Runtime feature check guarantees AVX2. Heavy match-finder
@@ -311,19 +354,49 @@ fn compress_dispatch_level2(src: &[u8], dst: &mut [u8]) -> usize {
 #[cfg(feature = "paranoid")]
 fn compress_dispatch(src: &[u8], dst: &mut [u8], level: i8) -> usize {
     match level {
-        -1 => speed_compress(src, dst),
-        0 => loose_compress(src, dst),
-        1 => compress_dispatch_level1(src, dst),
-        2 => heavy_compress(src, dst),
+        -1 => compress_dispatch_level_blitz(src, dst),
+        0 => compress_dispatch_level_swift(src, dst),
+        1 => compress_dispatch_level_loose(src, dst),
+        2 => compress_dispatch_level_keen(src, dst),
+        3 => compress_dispatch_level_light_optimal(src, dst),
+        4 => heavy_compress(src, dst),
         _ => unreachable!(),
     }
 }
 
 #[cfg(feature = "paranoid")]
 #[inline(never)]
-fn compress_dispatch_level1(src: &[u8], dst: &mut [u8]) -> usize {
+fn compress_dispatch_level_blitz(src: &[u8], dst: &mut [u8]) -> usize {
     let level_obj = fearless_simd::Level::new();
-    fearless_simd::dispatch!(level_obj, simd => default_compress(simd, src, dst))
+    fearless_simd::dispatch!(level_obj, simd => blitz_compress(simd, src, dst))
+}
+
+#[cfg(feature = "paranoid")]
+#[inline(never)]
+fn compress_dispatch_level_swift(src: &[u8], dst: &mut [u8]) -> usize {
+    let level_obj = fearless_simd::Level::new();
+    fearless_simd::dispatch!(level_obj, simd => swift_compress(simd, src, dst))
+}
+
+#[cfg(feature = "paranoid")]
+#[inline(never)]
+fn compress_dispatch_level_loose(src: &[u8], dst: &mut [u8]) -> usize {
+    let level_obj = fearless_simd::Level::new();
+    fearless_simd::dispatch!(level_obj, simd => loose_compress(simd, src, dst))
+}
+
+#[cfg(feature = "paranoid")]
+#[inline(never)]
+fn compress_dispatch_level_keen(src: &[u8], dst: &mut [u8]) -> usize {
+    let level_obj = fearless_simd::Level::new();
+    fearless_simd::dispatch!(level_obj, simd => keen_compress(simd, src, dst))
+}
+
+#[cfg(feature = "paranoid")]
+#[inline(never)]
+fn compress_dispatch_level_light_optimal(src: &[u8], dst: &mut [u8]) -> usize {
+    let level_obj = fearless_simd::Level::new();
+    fearless_simd::dispatch!(level_obj, simd => light_optimal_compress(simd, src, dst))
 }
 
 struct LatestHashTable {
@@ -337,33 +410,14 @@ impl LatestHashTable {
         }
     }
 
-    #[cfg(feature = "paranoid")]
     #[inline(always)]
     fn insert(&mut self, hsh: usize, pos: usize) {
         self.entries[hsh] = pos as u16;
     }
 
-    #[cfg(feature = "paranoid")]
     #[inline(always)]
     fn recover_pos(&self, hsh: usize, pos: usize) -> usize {
         recover_entry_pos(self.entries[hsh], pos)
-    }
-
-    #[cfg(not(feature = "paranoid"))]
-    #[inline(always)]
-    unsafe fn insert_unchecked(&mut self, hsh: usize, pos: usize) {
-        debug_assert!(hsh < HASH_SIZE);
-        unsafe {
-            *self.entries.get_unchecked_mut(hsh) = pos as u16;
-        }
-    }
-
-    #[cfg(not(feature = "paranoid"))]
-    #[inline(always)]
-    unsafe fn recover_pos_unchecked(&self, hsh: usize, pos: usize) -> usize {
-        debug_assert!(hsh < HASH_SIZE);
-        let entry = unsafe { *self.entries.get_unchecked(hsh) };
-        recover_entry_pos(entry, pos)
     }
 }
 
@@ -393,7 +447,6 @@ impl<const WIDTH: usize> RingHashTable<WIDTH> {
         }
     }
 
-    #[cfg(feature = "paranoid")]
     #[inline(always)]
     fn insert(&mut self, hsh: usize, pos: usize) {
         let bucket = &mut self.buckets[hsh];
@@ -406,34 +459,9 @@ impl<const WIDTH: usize> RingHashTable<WIDTH> {
         };
     }
 
-    #[cfg(feature = "paranoid")]
     #[inline(always)]
     fn bucket(&self, hsh: usize) -> &RingBucket<WIDTH> {
         &self.buckets[hsh]
-    }
-
-    #[cfg(not(feature = "paranoid"))]
-    #[inline(always)]
-    unsafe fn insert_unchecked(&mut self, hsh: usize, pos: usize) {
-        debug_assert!(hsh < HASH_SIZE);
-        let bucket = unsafe { self.buckets.get_unchecked_mut(hsh) };
-        let next = bucket.next as usize;
-        debug_assert!(next < WIDTH);
-        unsafe {
-            *bucket.entries.get_unchecked_mut(next) = pos as u16;
-        }
-        bucket.next = if next == WIDTH - 1 {
-            0
-        } else {
-            (next + 1) as u8
-        };
-    }
-
-    #[cfg(not(feature = "paranoid"))]
-    #[inline(always)]
-    unsafe fn bucket_unchecked(&self, hsh: usize) -> &RingBucket<WIDTH> {
-        debug_assert!(hsh < HASH_SIZE);
-        unsafe { self.buckets.get_unchecked(hsh) }
     }
 }
 
@@ -798,9 +826,8 @@ fn heavy_literal_extras(run: usize) -> usize {
     }
 }
 
-#[cfg(not(feature = "paranoid"))]
 #[inline(always)]
-fn find_latest_match<S: Simd>(
+fn find_latest_match6<S: Simd>(
     simd: S,
     src: &[u8],
     ht: &LatestHashTable,
@@ -808,168 +835,68 @@ fn find_latest_match<S: Simd>(
 ) -> (usize, usize) {
     debug_assert!(pos > HASHTAB_LAG);
     debug_assert!(pos + MAX_MATCH_LEN <= src.len());
-    let cur = paranoid_unsafe_call!(read_u32_le_unchecked(src, pos));
-    let hsh = hash4(cur);
-    let lst = paranoid_unsafe_call!(ht.recover_pos_unchecked(hsh, pos));
+    let cur = paranoid_unsafe_call!(read_u32_le(src, pos));
+    let hsh = hash6(paranoid_unsafe_call!(read_u64_le(src, pos)));
+    let lst = ht.recover_pos(hsh, pos);
     debug_assert!(lst + MAX_MATCH_LEN <= src.len());
 
-    if paranoid_unsafe_call!(read_u32_le_unchecked(src, lst)) != cur {
+    if paranoid_unsafe_call!(read_u32_le(src, lst)) != cur {
         return (0, lst);
     }
 
-    let cur_next = paranoid_unsafe_call!(read_u32_le_unchecked(src, pos + 4));
-    let lst_next = paranoid_unsafe_call!(read_u32_le_unchecked(src, lst + 4));
-    let diff = cur_next ^ lst_next;
-    if diff != 0 {
-        return (MIN_MATCH_LEN + (diff.trailing_zeros() as usize >> 3), lst);
-    }
-
-    let reg = paranoid_unsafe_call!(load_u8x32_unchecked(simd, src, pos));
-    let ireg = paranoid_unsafe_call!(load_u8x32_unchecked(simd, src, lst));
+    let reg = paranoid_unsafe_call!(load_u8x32(simd, src, pos));
+    let ireg = paranoid_unsafe_call!(load_u8x32(simd, src, lst));
     (lcp_loaded(reg, ireg), lst)
 }
 
-#[cfg(feature = "paranoid")]
-fn find_latest_match(src: &[u8], ht: &LatestHashTable, pos: usize) -> (usize, usize) {
-    let cur = read_u32_le(src, pos);
-    let hsh = hash4(cur);
-    let lst = ht.recover_pos(hsh, pos);
-    if read_u32_le(src, lst) != cur {
+#[inline(always)]
+fn find_swift_match<S: Simd>(
+    simd: S,
+    src: &[u8],
+    ht6: &LatestHashTable,
+    ht4: &LatestHashTable,
+    pos: usize,
+    cand_len: usize,
+) -> (usize, usize) {
+    debug_assert!(pos > HASHTAB_LAG);
+    debug_assert!(pos + MAX_MATCH_LEN <= src.len());
+    let cur = paranoid_unsafe_call!(read_u32_le(src, pos));
+    let mut lst = ht6.recover_pos(hash6(paranoid_unsafe_call!(read_u64_le(src, pos))), pos);
+    let mut hit = paranoid_unsafe_call!(read_u32_le(src, lst)) == cur;
+
+    if !hit && cand_len == 0 {
+        lst = ht4.recover_pos(hash4(cur), pos);
+        hit = paranoid_unsafe_call!(read_u32_le(src, lst)) == cur;
+    }
+
+    if !hit {
         return (0, lst);
     }
-    let diff = read_u32_le(src, pos + 4) ^ read_u32_le(src, lst + 4);
-    if diff != 0 {
-        return (MIN_MATCH_LEN + (diff.trailing_zeros() as usize >> 3), lst);
-    }
-    (lcp(src, pos, lst), lst)
+
+    let reg = paranoid_unsafe_call!(load_u8x32(simd, src, pos));
+    let ireg = paranoid_unsafe_call!(load_u8x32(simd, src, lst));
+    (lcp_loaded(reg, ireg), lst)
 }
 
-#[cfg(not(feature = "paranoid"))]
 #[inline(always)]
-fn find_ring_match_default<S: Simd>(
+fn find_ring_match<S: Simd, const WIDTH: usize>(
     simd: S,
-    src: &[u8],
-    ht: &RingHashTable<DEFAULT_RING_WIDTH>,
-    pos: usize,
-) -> (usize, usize) {
-    debug_assert!(pos > HASHTAB_LAG);
-    debug_assert!(pos + MAX_MATCH_LEN <= src.len());
-
-    let hsh = hash4(paranoid_unsafe_call!(read_u32_le_unchecked(src, pos)));
-    let reg = paranoid_unsafe_call!(load_u8x32_unchecked(simd, src, pos));
-    let bucket = paranoid_unsafe_call!(ht.bucket_unchecked(hsh));
-
-    let mut lst = 0;
-    let mut match_len = 0;
-
-    macro_rules! probe {
-        ($i:literal) => {{
-            let ilst = recover_entry_pos(bucket.entries[$i], pos);
-            let ireg = paranoid_unsafe_call!(load_u8x32_unchecked(simd, src, ilst));
-            let imatch_len = lcp_loaded(reg, ireg);
-            if imatch_len > match_len {
-                lst = ilst;
-                match_len = imatch_len;
-            }
-        }};
-    }
-
-    probe!(0);
-    probe!(1);
-    probe!(2);
-    probe!(3);
-    probe!(4);
-    probe!(5);
-    probe!(6);
-    probe!(7);
-    probe!(8);
-    probe!(9);
-    probe!(10);
-    (match_len, lst)
-}
-
-#[cfg(not(feature = "paranoid"))]
-#[inline(always)]
-fn find_ring_match_loose<S: Simd>(
-    simd: S,
-    src: &[u8],
-    ht: &RingHashTable<LOOSE_RING_WIDTH>,
-    pos: usize,
-) -> (usize, usize) {
-    debug_assert!(pos > HASHTAB_LAG);
-    debug_assert!(pos + MAX_MATCH_LEN <= src.len());
-
-    let hsh = hash4(paranoid_unsafe_call!(read_u32_le_unchecked(src, pos)));
-    let reg = paranoid_unsafe_call!(load_u8x32_unchecked(simd, src, pos));
-    let bucket = paranoid_unsafe_call!(ht.bucket_unchecked(hsh));
-
-    let mut lst = 0;
-    let mut match_len = 0;
-
-    macro_rules! probe {
-        ($i:literal) => {{
-            let ilst = recover_entry_pos(bucket.entries[$i], pos);
-            let ireg = paranoid_unsafe_call!(load_u8x32_unchecked(simd, src, ilst));
-            let imatch_len = lcp_loaded(reg, ireg);
-            if imatch_len > match_len {
-                lst = ilst;
-                match_len = imatch_len;
-            }
-        }};
-    }
-
-    probe!(0);
-    probe!(1);
-    probe!(2);
-    probe!(3);
-    probe!(4);
-    probe!(5);
-    probe!(6);
-
-    (match_len, lst)
-}
-
-#[cfg(feature = "paranoid")]
-#[inline(always)]
-fn find_ring_match<const WIDTH: usize>(
     src: &[u8],
     ht: &RingHashTable<WIDTH>,
     pos: usize,
 ) -> (usize, usize) {
-    let hsh = hash4(read_u32_le(src, pos));
+    debug_assert!(pos > HASHTAB_LAG);
+    debug_assert!(pos + MAX_MATCH_LEN <= src.len());
+
+    let hsh = hash4(paranoid_unsafe_call!(read_u32_le(src, pos)));
+    let reg = paranoid_unsafe_call!(load_u8x32(simd, src, pos));
     let bucket = ht.bucket(hsh);
     let mut lst = 0;
     let mut match_len = 0;
 
     for &entry in &bucket.entries {
         let ilst = recover_entry_pos(entry, pos);
-        let imatch_len = lcp(src, pos, ilst);
-        if imatch_len > match_len {
-            lst = ilst;
-            match_len = imatch_len;
-        }
-    }
-
-    (match_len, lst)
-}
-
-#[cfg(feature = "paranoid")]
-#[inline(always)]
-fn find_ring_match_simd<S: Simd, const WIDTH: usize>(
-    simd: S,
-    src: &[u8],
-    ht: &RingHashTable<WIDTH>,
-    pos: usize,
-) -> (usize, usize) {
-    let hsh = hash4(read_u32_le(src, pos));
-    let reg = load_u8x32_checked(simd, src, pos);
-    let bucket = ht.bucket(hsh);
-    let mut lst = 0;
-    let mut match_len = 0;
-
-    for &entry in &bucket.entries {
-        let ilst = recover_entry_pos(entry, pos);
-        let ireg = load_u8x32_checked(simd, src, ilst);
+        let ireg = paranoid_unsafe_call!(load_u8x32(simd, src, ilst));
         let imatch_len = lcp_loaded(reg, ireg);
         if imatch_len > match_len {
             lst = ilst;
@@ -980,88 +907,14 @@ fn find_ring_match_simd<S: Simd, const WIDTH: usize>(
     (match_len, lst)
 }
 
-#[cfg(not(feature = "paranoid"))]
 #[inline(always)]
-fn batch_insert_latest(
-    src: &[u8],
-    ht: &mut LatestHashTable,
-    hpos: &mut usize,
-    pos: usize,
-    sparse: bool,
-) {
+fn batch_insert_latest6(src: &[u8], ht: &mut LatestHashTable, hpos: &mut usize, pos: usize) {
     while pos >= *hpos + HASHTAB_LAG + LATEST_BATCH {
         macro_rules! insert {
             ($i:literal) => {{
                 let insert_pos = *hpos + $i;
-                let hsh = hash4(paranoid_unsafe_call!(read_u32_le_unchecked(
-                    src, insert_pos
-                )));
-                paranoid_unsafe_call!(ht.insert_unchecked(hsh, insert_pos));
-            }};
-        }
-
-        insert!(0);
-        if !sparse {
-            insert!(1);
-            insert!(2);
-            insert!(3);
-            insert!(4);
-            insert!(5);
-            insert!(6);
-            insert!(7);
-        }
-        *hpos += LATEST_BATCH;
-    }
-}
-
-#[cfg(feature = "paranoid")]
-#[inline(always)]
-fn batch_insert_latest(
-    src: &[u8],
-    ht: &mut LatestHashTable,
-    hpos: &mut usize,
-    pos: usize,
-    sparse: bool,
-) {
-    while pos >= *hpos + HASHTAB_LAG + LATEST_BATCH {
-        macro_rules! insert {
-            ($i:literal) => {{
-                let insert_pos = *hpos + $i;
-                let hsh = hash4(read_u32_le(src, insert_pos));
+                let hsh = hash6(paranoid_unsafe_call!(read_u64_le(src, insert_pos)));
                 ht.insert(hsh, insert_pos);
-            }};
-        }
-
-        insert!(0);
-        if !sparse {
-            insert!(1);
-            insert!(2);
-            insert!(3);
-            insert!(4);
-            insert!(5);
-            insert!(6);
-            insert!(7);
-        }
-        *hpos += LATEST_BATCH;
-    }
-}
-
-#[cfg(not(feature = "paranoid"))]
-#[inline(always)]
-fn batch_insert_ring<const WIDTH: usize>(
-    src: &[u8],
-    ht: &mut RingHashTable<WIDTH>,
-    hpos: &mut usize,
-    pos: usize,
-) {
-    while pos >= *hpos + HASHTAB_LAG + RING_BATCH {
-        macro_rules! insert {
-            ($i:literal) => {{
-                let insert_pos = *hpos + $i;
-                let hsh = hash4(paranoid_unsafe_call!(read_u32_le_unchecked(
-                    src, insert_pos
-                )));
-                paranoid_unsafe_call!(ht.insert_unchecked(hsh, insert_pos));
             }};
         }
 
@@ -1073,11 +926,45 @@ fn batch_insert_ring<const WIDTH: usize>(
         insert!(5);
         insert!(6);
         insert!(7);
-        *hpos += RING_BATCH;
+        *hpos += LATEST_BATCH;
     }
 }
 
-#[cfg(feature = "paranoid")]
+#[inline(always)]
+fn batch_insert_swift(
+    src: &[u8],
+    ht6: &mut LatestHashTable,
+    ht4: &mut LatestHashTable,
+    hpos: &mut usize,
+    pos: usize,
+) {
+    while pos >= *hpos + HASHTAB_LAG + LATEST_BATCH {
+        macro_rules! insert {
+            ($i:literal) => {{
+                let insert_pos = *hpos + $i;
+                ht6.insert(
+                    hash6(paranoid_unsafe_call!(read_u64_le(src, insert_pos))),
+                    insert_pos,
+                );
+                if insert_pos & 1 == 0 {
+                    let val = paranoid_unsafe_call!(read_u32_le(src, insert_pos));
+                    ht4.insert(hash4(val), insert_pos);
+                }
+            }};
+        }
+
+        insert!(0);
+        insert!(1);
+        insert!(2);
+        insert!(3);
+        insert!(4);
+        insert!(5);
+        insert!(6);
+        insert!(7);
+        *hpos += LATEST_BATCH;
+    }
+}
+
 #[inline(always)]
 fn batch_insert_ring<const WIDTH: usize>(
     src: &[u8],
@@ -1089,7 +976,7 @@ fn batch_insert_ring<const WIDTH: usize>(
         macro_rules! insert {
             ($i:literal) => {{
                 let insert_pos = *hpos + $i;
-                let hsh = hash4(read_u32_le(src, insert_pos));
+                let hsh = hash4(paranoid_unsafe_call!(read_u32_le(src, insert_pos)));
                 ht.insert(hsh, insert_pos);
             }};
         }
@@ -1140,17 +1027,6 @@ fn emit_token(
 
     *drpos -= lit_len;
     dst[*drpos..*drpos + lit_len].copy_from_slice(&src[lit..lit + lit_len]);
-}
-
-#[inline(always)]
-fn emit_match_token(dst: &mut [u8], dlpos: &mut usize, match_len: usize, dis: usize) {
-    let norm_match = match_len - (MIN_MATCH_LEN - 1);
-    dst[*dlpos] = norm_match as u8;
-    *dlpos += 1;
-
-    let dbytes = (dis - MIN_DISTANCE) as u16;
-    dst[*dlpos..*dlpos + 2].copy_from_slice(&dbytes.to_le_bytes());
-    *dlpos += 2;
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1241,6 +1117,34 @@ impl HeavyWorkspace {
             block_tokens: Vec::new(),
         }
     }
+}
+
+struct LightWorkspace {
+    sorter: SaisWorkspace,
+    sa: Vec<i32>,
+    rank: Vec<u32>,
+    live: HeavyLiveSet,
+    max_len: Vec<u8>,
+    match_dis: Vec<u32>,
+}
+
+impl LightWorkspace {
+    fn new() -> Self {
+        Self {
+            sorter: SaisWorkspace::new(),
+            sa: Vec::new(),
+            rank: Vec::new(),
+            live: HeavyLiveSet::default(),
+            max_len: Vec::new(),
+            match_dis: Vec::new(),
+        }
+    }
+}
+
+#[cfg(feature = "std")]
+std::thread_local! {
+    static LIGHT_WORKSPACE: core::cell::RefCell<LightWorkspace> =
+        core::cell::RefCell::new(LightWorkspace::new());
 }
 
 #[cfg(all(not(feature = "paranoid"), feature = "std"))]
@@ -1593,680 +1497,1128 @@ fn heavy_find_matches<F>(
     }
 }
 
-#[cfg(not(feature = "paranoid"))]
-#[inline(always)]
-fn speed_compress<S: Simd>(simd: S, src: &[u8], dst: &mut [u8]) -> usize {
-    speed_compress_impl(simd, src, dst)
-}
-
-#[cfg(feature = "paranoid")]
-#[inline(always)]
-fn speed_compress(src: &[u8], dst: &mut [u8]) -> usize {
-    speed_compress_impl(src, dst)
-}
-
-#[cfg(not(feature = "paranoid"))]
-#[inline(always)]
-fn speed_compress_impl<S: Simd>(simd: S, src: &[u8], dst: &mut [u8]) -> usize {
-    let src_size = src.len();
-
-    dst[0..8].copy_from_slice(&(src_size as u64).to_le_bytes());
-    let mut dlpos: usize = 8;
-
-    if src_size <= SMALL_LIM {
-        dst[8..8 + src_size].copy_from_slice(src);
-        return 8 + src_size;
-    }
-
-    let literal_suffix_pos = dlpos;
-    dlpos += 8;
-
-    let dst_cap = dst.len();
-    let mut drpos = dst_cap;
-    let match_end_limit = src_size - LITERAL_SUFFIX;
-
-    let mut ht = LatestHashTable::new();
-    let mut pos: usize = 0;
-    let mut hpos: usize = 0;
-    let mut lit: usize = 0;
-    let mut miss_run: usize = 0;
-
-    while pos + MAX_MATCH_LEN <= match_end_limit {
-        batch_insert_latest(src, &mut ht, &mut hpos, pos, false);
-
-        let (match_len, lst) = if pos > HASHTAB_LAG {
-            find_latest_match(simd, src, &ht, pos)
-        } else {
-            (0, 0)
-        };
-
-        if match_len < MIN_MATCH_LEN {
-            pos += 1 + (miss_run >> SPEED_SKIP_SHIFT);
-            miss_run += 1;
-            continue;
-        }
-
-        miss_run = 0;
-        let lit_len = pos - lit;
-        let dis = pos - lst;
-
-        emit_token(
-            dst, &mut dlpos, &mut drpos, src, lit, lit_len, match_len, dis,
-        );
-
-        pos += match_len;
-        lit = pos;
-
-        if match_len >= CHAIN_AFTER {
-            loop {
-                if pos + MAX_MATCH_LEN > match_end_limit {
-                    break;
-                }
-
-                batch_insert_latest(src, &mut ht, &mut hpos, pos, false);
-                let (chain_match_len, chain_lst) = if pos > HASHTAB_LAG {
-                    find_latest_match(simd, src, &ht, pos)
-                } else {
-                    (0, 0)
-                };
-
-                if chain_match_len < MIN_MATCH_LEN {
-                    break;
-                }
-
-                let dis = pos - chain_lst;
-                emit_match_token(dst, &mut dlpos, chain_match_len, dis);
-
-                pos += chain_match_len;
-                lit = pos;
-            }
-        }
-    }
-
-    if drpos < dst_cap {
-        let lit_data_len = dst_cap - drpos;
-        dst.copy_within(drpos..dst_cap, dlpos);
-        dlpos += lit_data_len;
-    }
-
-    let literal_suffix_cnt = src_size - lit;
-    dst[literal_suffix_pos..literal_suffix_pos + 8]
-        .copy_from_slice(&(literal_suffix_cnt as u64).to_le_bytes());
-    dst[dlpos..dlpos + literal_suffix_cnt].copy_from_slice(&src[lit..]);
-    dlpos += literal_suffix_cnt;
-
-    dlpos
-}
-
-#[cfg(feature = "paranoid")]
-#[inline(always)]
-fn speed_compress_impl(src: &[u8], dst: &mut [u8]) -> usize {
-    let src_size = src.len();
-
-    dst[0..8].copy_from_slice(&(src_size as u64).to_le_bytes());
-    let mut dlpos: usize = 8;
-
-    if src_size <= SMALL_LIM {
-        dst[8..8 + src_size].copy_from_slice(src);
-        return 8 + src_size;
-    }
-
-    let literal_suffix_pos = dlpos;
-    dlpos += 8;
-
-    let dst_cap = dst.len();
-    let mut drpos = dst_cap;
-    let match_end_limit = src_size - LITERAL_SUFFIX;
-
-    let mut ht = LatestHashTable::new();
-    let mut pos: usize = 0;
-    let mut hpos: usize = 0;
-    let mut lit: usize = 0;
-    let mut miss_run: usize = 0;
-
-    while pos + MAX_MATCH_LEN <= match_end_limit {
-        batch_insert_latest(src, &mut ht, &mut hpos, pos, false);
-
-        let (match_len, lst) = if pos > HASHTAB_LAG {
-            find_latest_match(src, &ht, pos)
-        } else {
-            (0, 0)
-        };
-
-        if match_len < MIN_MATCH_LEN {
-            pos += 1 + (miss_run >> SKIP_SHIFT);
-            miss_run += 1;
-            continue;
-        }
-
-        miss_run = 0;
-        let lit_len = pos - lit;
-        let dis = pos - lst;
-
-        emit_token(
-            dst, &mut dlpos, &mut drpos, src, lit, lit_len, match_len, dis,
-        );
-
-        pos += match_len;
-        lit = pos;
-
-        if match_len >= CHAIN_AFTER {
-            loop {
-                if pos + MAX_MATCH_LEN > match_end_limit {
-                    break;
-                }
-
-                batch_insert_latest(src, &mut ht, &mut hpos, pos, false);
-                let (chain_match_len, chain_lst) = if pos > HASHTAB_LAG {
-                    find_latest_match(src, &ht, pos)
-                } else {
-                    (0, 0)
-                };
-
-                if chain_match_len < MIN_MATCH_LEN {
-                    break;
-                }
-
-                let dis = pos - chain_lst;
-                emit_match_token(dst, &mut dlpos, chain_match_len, dis);
-
-                pos += chain_match_len;
-                lit = pos;
-            }
-        }
-    }
-
-    if drpos < dst_cap {
-        let lit_data_len = dst_cap - drpos;
-        dst.copy_within(drpos..dst_cap, dlpos);
-        dlpos += lit_data_len;
-    }
-
-    let literal_suffix_cnt = src_size - lit;
-    dst[literal_suffix_pos..literal_suffix_pos + 8]
-        .copy_from_slice(&(literal_suffix_cnt as u64).to_le_bytes());
-    dst[dlpos..dlpos + literal_suffix_cnt].copy_from_slice(&src[lit..]);
-    dlpos += literal_suffix_cnt;
-
-    dlpos
-}
-
-#[cfg(not(feature = "paranoid"))]
-#[inline(always)]
-fn default_compress<S: Simd>(simd: S, src: &[u8], dst: &mut [u8]) -> usize {
-    default_compress_impl(simd, src, dst)
-}
-
-#[cfg(feature = "paranoid")]
-#[inline(always)]
-fn default_compress<S: Simd>(simd: S, src: &[u8], dst: &mut [u8]) -> usize {
-    default_compress_impl(simd, src, dst)
-}
-
-#[cfg(not(feature = "paranoid"))]
-#[inline(always)]
-fn default_compress_impl<S: Simd>(simd: S, src: &[u8], dst: &mut [u8]) -> usize {
-    const LOOKAHEAD: usize = 2;
-    const LA_GATE: usize = 8;
-    const _: () = assert!(LOOKAHEAD == 2);
-
-    let src_size = src.len();
-
-    dst[0..8].copy_from_slice(&(src_size as u64).to_le_bytes());
-    let mut dlpos: usize = 8;
-
-    if src_size <= SMALL_LIM {
-        dst[8..8 + src_size].copy_from_slice(src);
-        return 8 + src_size;
-    }
-
-    let literal_suffix_pos = dlpos;
-    dlpos += 8;
-
-    let dst_cap = dst.len();
-    let mut drpos = dst_cap;
-    let match_end_limit = src_size - LITERAL_SUFFIX;
-
-    let mut ht = RingHashTable::<DEFAULT_RING_WIDTH>::new();
-    let mut pos: usize = 0;
-    let mut hpos: usize = 0;
-    let mut lit: usize = 0;
-    let mut miss_run: usize = 0;
-
-    while pos + MAX_MATCH_LEN <= match_end_limit {
-        batch_insert_ring(src, &mut ht, &mut hpos, pos);
-
-        let (mut match_len, mut lst) = if pos > HASHTAB_LAG {
-            find_ring_match_default(simd, src, &ht, pos)
-        } else {
-            (0, 0)
-        };
-
-        if match_len >= MIN_MATCH_LEN {
-            let base_pos = pos;
-            if match_len < LA_GATE {
-                let npos = base_pos + 1;
-                if npos + MAX_MATCH_LEN <= match_end_limit {
-                    let (nmatch_len, nlst) = find_ring_match_default(simd, src, &ht, npos);
-                    if nmatch_len > match_len {
-                        pos = npos;
-                        lst = nlst;
-                        match_len = nmatch_len;
-                    }
-                }
-            }
-            if match_len < LA_GATE {
-                let npos = base_pos + LOOKAHEAD;
-                if npos + MAX_MATCH_LEN <= match_end_limit {
-                    let (nmatch_len, nlst) = find_ring_match_default(simd, src, &ht, npos);
-                    if nmatch_len > match_len {
-                        pos = npos;
-                        lst = nlst;
-                        match_len = nmatch_len;
-                    }
-                }
-            }
-
-            let lit_len = pos - lit;
-            let dis = pos - lst;
-
-            emit_token(
-                dst, &mut dlpos, &mut drpos, src, lit, lit_len, match_len, dis,
-            );
-
-            pos += match_len;
-            lit = pos;
-            miss_run = 0;
-        } else {
-            pos += 1 + (miss_run >> SKIP_SHIFT);
-            miss_run += 1;
-        }
-    }
-
-    if drpos < dst_cap {
-        let lit_data_len = dst_cap - drpos;
-        dst.copy_within(drpos..dst_cap, dlpos);
-        dlpos += lit_data_len;
-    }
-
-    let literal_suffix_cnt = src_size - lit;
-    dst[literal_suffix_pos..literal_suffix_pos + 8]
-        .copy_from_slice(&(literal_suffix_cnt as u64).to_le_bytes());
-    dst[dlpos..dlpos + literal_suffix_cnt].copy_from_slice(&src[lit..]);
-    dlpos += literal_suffix_cnt;
-
-    dlpos
-}
-
-#[cfg(feature = "paranoid")]
-#[inline(always)]
-fn default_compress_impl<S: Simd>(simd: S, src: &[u8], dst: &mut [u8]) -> usize {
-    const LOOKAHEAD: usize = 2;
-    const LA_GATE: usize = 8;
-    const _: () = assert!(LOOKAHEAD == 2);
-
-    let src_size = src.len();
-
-    dst[0..8].copy_from_slice(&(src_size as u64).to_le_bytes());
-    let mut dlpos: usize = 8;
-
-    if src_size <= SMALL_LIM {
-        dst[8..8 + src_size].copy_from_slice(src);
-        return 8 + src_size;
-    }
-
-    let literal_suffix_pos = dlpos;
-    dlpos += 8;
-
-    let dst_cap = dst.len();
-    let mut drpos = dst_cap;
-    let match_end_limit = src_size - LITERAL_SUFFIX;
-
-    let mut ht = RingHashTable::<DEFAULT_RING_WIDTH>::new();
-    let mut pos: usize = 0;
-    let mut hpos: usize = 0;
-    let mut lit: usize = 0;
-    let mut miss_run: usize = 0;
-
-    while pos + MAX_MATCH_LEN <= match_end_limit {
-        batch_insert_ring(src, &mut ht, &mut hpos, pos);
-
-        let (mut match_len, mut lst) = if pos > HASHTAB_LAG {
-            find_ring_match_simd(simd, src, &ht, pos)
-        } else {
-            (0, 0)
-        };
-
-        if match_len >= MIN_MATCH_LEN {
-            let base_pos = pos;
-            if match_len < LA_GATE {
-                let npos = base_pos + 1;
-                if npos + MAX_MATCH_LEN <= match_end_limit {
-                    let (nmatch_len, nlst) = find_ring_match_simd(simd, src, &ht, npos);
-                    if nmatch_len > match_len {
-                        pos = npos;
-                        lst = nlst;
-                        match_len = nmatch_len;
-                    }
-                }
-            }
-            if match_len < LA_GATE {
-                let npos = base_pos + LOOKAHEAD;
-                if npos + MAX_MATCH_LEN <= match_end_limit {
-                    let (nmatch_len, nlst) = find_ring_match_simd(simd, src, &ht, npos);
-                    if nmatch_len > match_len {
-                        pos = npos;
-                        lst = nlst;
-                        match_len = nmatch_len;
-                    }
-                }
-            }
-
-            let lit_len = pos - lit;
-            let dis = pos - lst;
-
-            emit_token(
-                dst, &mut dlpos, &mut drpos, src, lit, lit_len, match_len, dis,
-            );
-
-            pos += match_len;
-            lit = pos;
-            miss_run = 0;
-        } else {
-            pos += 1 + (miss_run >> SKIP_SHIFT);
-            miss_run += 1;
-        }
-    }
-
-    if drpos < dst_cap {
-        let lit_data_len = dst_cap - drpos;
-        dst.copy_within(drpos..dst_cap, dlpos);
-        dlpos += lit_data_len;
-    }
-
-    let literal_suffix_cnt = src_size - lit;
-    dst[literal_suffix_pos..literal_suffix_pos + 8]
-        .copy_from_slice(&(literal_suffix_cnt as u64).to_le_bytes());
-    dst[dlpos..dlpos + literal_suffix_cnt].copy_from_slice(&src[lit..]);
-    dlpos += literal_suffix_cnt;
-
-    dlpos
-}
-
-#[cfg(not(feature = "paranoid"))]
 #[inline(always)]
 fn loose_compress<S: Simd>(simd: S, src: &[u8], dst: &mut [u8]) -> usize {
-    loose_compress_impl(simd, src, dst)
+    ring_adaptive_compress::<S, LOOSE_RING_WIDTH>(simd, src, dst, false)
 }
 
-#[cfg(feature = "paranoid")]
 #[inline(always)]
-fn loose_compress(src: &[u8], dst: &mut [u8]) -> usize {
-    loose_compress_impl(src, dst)
+fn blitz_compress<S: Simd>(simd: S, src: &[u8], dst: &mut [u8]) -> usize {
+    const ACCEPT_LEN: usize = 9;
+    const FIRE_AT: usize = 6;
+
+    let src_size = src.len();
+
+    dst[0..8].copy_from_slice(&(src_size as u64).to_le_bytes());
+    let mut dlpos: usize = 8;
+
+    if src_size <= SMALL_LIM {
+        dst[8..8 + src_size].copy_from_slice(src);
+        return 8 + src_size;
+    }
+
+    let literal_suffix_pos = dlpos;
+    dlpos += 8;
+
+    let dst_cap = dst.len();
+    let mut drpos = dst_cap;
+    let match_end_limit = src_size - LITERAL_SUFFIX;
+
+    let mut ht = LatestHashTable::new();
+    let mut pos: usize = 0;
+    let mut hpos: usize = 0;
+    let mut lit: usize = 0;
+    let mut miss_run: usize = 0;
+
+    let mut cand_pos: usize = 0;
+    let mut cand_len: usize = 0;
+    let mut cand_lst: usize = 0;
+
+    while pos + MAX_MATCH_LEN <= match_end_limit {
+        batch_insert_latest6(src, &mut ht, &mut hpos, pos);
+
+        let (mut match_len, mut lst) = if pos > HASHTAB_LAG {
+            find_latest_match6(simd, src, &ht, pos)
+        } else {
+            (0, 0)
+        };
+
+        let pos_safe_bound = pos;
+        let pend = pos - lit;
+        let mut accept = match_len >= ACCEPT_LEN;
+        let fire = pend + BLITZ_PROBE_STEP > FIRE_AT;
+
+        if !accept {
+            if fire {
+                if cand_len != 0
+                    && (match_len < MIN_MATCH_LEN || cand_pos + cand_len >= pos + match_len)
+                {
+                    pos = cand_pos;
+                    lst = cand_lst;
+                    match_len = cand_len;
+                }
+                accept = match_len >= MIN_MATCH_LEN;
+            } else if match_len >= MIN_MATCH_LEN
+                && (cand_len == 0 || pos + match_len >= cand_pos + cand_len)
+            {
+                cand_pos = pos;
+                cand_len = match_len;
+                cand_lst = lst;
+            }
+        }
+
+        if !accept {
+            pos += BLITZ_PROBE_STEP + (miss_run >> SKIP_SHIFT);
+            miss_run += 1;
+            continue;
+        }
+
+        miss_run = 0;
+
+        // Backward match extension
+        while pos > lit && lst > 0 && match_len < MAX_MATCH_LEN && src[pos - 1] == src[lst - 1] {
+            pos -= 1;
+            lst -= 1;
+            match_len += 1;
+        }
+
+        let lit_len = pos - lit;
+        let dis = pos - lst;
+
+        emit_token(
+            dst, &mut dlpos, &mut drpos, src, lit, lit_len, match_len, dis,
+        );
+
+        pos += match_len;
+        lit = pos;
+        pos = pos.max(pos_safe_bound);
+        cand_len = 0;
+    }
+
+    finish_light(src, dst, dst_cap, dlpos, drpos, literal_suffix_pos, lit)
+}
+
+#[inline(always)]
+fn swift_compress<S: Simd>(simd: S, src: &[u8], dst: &mut [u8]) -> usize {
+    const ACCEPT_LEN: usize = 7;
+    const FIRE_AT: usize = 6;
+
+    let src_size = src.len();
+
+    dst[0..8].copy_from_slice(&(src_size as u64).to_le_bytes());
+    let mut dlpos: usize = 8;
+
+    if src_size <= SMALL_LIM {
+        dst[8..8 + src_size].copy_from_slice(src);
+        return 8 + src_size;
+    }
+
+    let literal_suffix_pos = dlpos;
+    dlpos += 8;
+
+    let dst_cap = dst.len();
+    let mut drpos = dst_cap;
+    let match_end_limit = src_size - LITERAL_SUFFIX;
+
+    let mut ht6 = LatestHashTable::new();
+    let mut ht4 = LatestHashTable::new();
+    let mut pos: usize = 0;
+    let mut hpos: usize = 0;
+    let mut lit: usize = 0;
+    let mut miss_run: usize = 0;
+
+    let mut cand_pos: usize = 0;
+    let mut cand_len: usize = 0;
+    let mut cand_lst: usize = 0;
+    let mut regime: i32 = 0;
+
+    while pos + MAX_MATCH_LEN <= match_end_limit {
+        batch_insert_swift(src, &mut ht6, &mut ht4, &mut hpos, pos);
+
+        let (mut match_len, mut lst) = if pos > HASHTAB_LAG {
+            find_swift_match(simd, src, &ht6, &ht4, pos, cand_len)
+        } else {
+            (0, 0)
+        };
+
+        let pos_safe_bound = pos;
+        let pend = pos - lit;
+        let mut accept = match_len >= ACCEPT_LEN;
+        let fire = if regime >= LIGHT_REGIME_THRESHOLD {
+            pend >= FIRE_AT
+        } else {
+            pend == FIRE_AT
+        };
+
+        if !accept {
+            if fire {
+                if cand_len != 0
+                    && (match_len < MIN_MATCH_LEN || cand_pos + cand_len >= pos + match_len)
+                {
+                    pos = cand_pos;
+                    lst = cand_lst;
+                    match_len = cand_len;
+                }
+                accept = match_len >= MIN_MATCH_LEN;
+            } else if match_len >= MIN_MATCH_LEN
+                && (cand_len == 0 || pos + match_len >= cand_pos + cand_len)
+            {
+                cand_pos = pos;
+                cand_len = match_len;
+                cand_lst = lst;
+            }
+        }
+
+        if !accept {
+            pos += 1 + (miss_run >> SKIP_SHIFT);
+            miss_run += 1;
+            continue;
+        }
+
+        miss_run = 0;
+
+        // Backward match extension
+        while pos > lit && lst > 0 && match_len < MAX_MATCH_LEN && src[pos - 1] == src[lst - 1] {
+            pos -= 1;
+            lst -= 1;
+            match_len += 1;
+        }
+
+        let lit_len = pos - lit;
+        let dis = pos - lst;
+        vote_loose_regime(&mut regime, lit_len);
+
+        emit_token(
+            dst, &mut dlpos, &mut drpos, src, lit, lit_len, match_len, dis,
+        );
+
+        pos += match_len;
+        lit = pos;
+        pos = pos.max(pos_safe_bound);
+        cand_len = 0;
+    }
+
+    finish_light(src, dst, dst_cap, dlpos, drpos, literal_suffix_pos, lit)
+}
+
+#[inline(always)]
+fn keen_compress<S: Simd>(simd: S, src: &[u8], dst: &mut [u8]) -> usize {
+    ring_adaptive_compress::<S, KEEN_RING_WIDTH>(simd, src, dst, true)
+}
+
+#[inline(always)]
+fn ring_adaptive_compress<S: Simd, const WIDTH: usize>(
+    simd: S,
+    src: &[u8],
+    dst: &mut [u8],
+    keen: bool,
+) -> usize {
+    const LOOSE_ACCEPT_LEN: usize = 7;
+    const KEEN_ACCEPT_LEN: usize = 6;
+    const FIRE_AT: usize = 6;
+    const LA_GATE: usize = 16;
+    const LA_PATE: usize = 8;
+
+    let src_size = src.len();
+
+    dst[0..8].copy_from_slice(&(src_size as u64).to_le_bytes());
+    let mut dlpos: usize = 8;
+
+    if src_size <= SMALL_LIM {
+        dst[8..8 + src_size].copy_from_slice(src);
+        return 8 + src_size;
+    }
+
+    let literal_suffix_pos = dlpos;
+    dlpos += 8;
+
+    let dst_cap = dst.len();
+    let mut drpos = dst_cap;
+    let match_end_limit = src_size - LITERAL_SUFFIX;
+
+    let mut ht = RingHashTable::<WIDTH>::new();
+    let mut pos: usize = 0;
+    let mut hpos: usize = 0;
+    let mut lit: usize = 0;
+    let mut miss_run: usize = 0;
+
+    let mut cand_pos: usize = 0;
+    let mut cand_len: usize = 0;
+    let mut cand_lst: usize = 0;
+    let mut regime: i32 = 0;
+
+    while pos + MAX_MATCH_LEN <= match_end_limit {
+        batch_insert_ring(src, &mut ht, &mut hpos, pos);
+
+        let (mut match_len, mut lst) = if pos > HASHTAB_LAG {
+            find_ring_match(simd, src, &ht, pos)
+        } else {
+            (0, 0)
+        };
+
+        let pos_safe_bound = pos;
+        let accept_len = if keen && regime >= LIGHT_REGIME_THRESHOLD {
+            MIN_MATCH_LEN
+        } else if keen {
+            KEEN_ACCEPT_LEN
+        } else {
+            LOOSE_ACCEPT_LEN
+        };
+        let mut accept = match_len >= accept_len;
+
+        if accept && keen {
+            let base_pos = pos;
+            let mut npos = base_pos + 1;
+            while npos <= base_pos + 2
+                && npos + MAX_MATCH_LEN <= match_end_limit
+                && match_len < LA_GATE
+            {
+                let (nmatch_len, nlst) = find_ring_match(simd, src, &ht, npos);
+                let improved = nmatch_len > match_len;
+                if improved {
+                    pos = npos;
+                    lst = nlst;
+                    match_len = nmatch_len;
+                }
+                if !improved && match_len >= LA_PATE {
+                    break;
+                }
+                npos += 1;
+            }
+        } else if !accept {
+            let pend = pos - lit;
+            let fire = if keen || regime >= LIGHT_REGIME_THRESHOLD {
+                pend >= FIRE_AT
+            } else {
+                pend == FIRE_AT
+            };
+
+            if fire {
+                if cand_len != 0
+                    && (match_len < MIN_MATCH_LEN || cand_pos + cand_len >= pos + match_len)
+                {
+                    pos = cand_pos;
+                    lst = cand_lst;
+                    match_len = cand_len;
+                }
+                accept = match_len >= MIN_MATCH_LEN;
+            } else if match_len >= MIN_MATCH_LEN
+                && (cand_len == 0 || pos + match_len >= cand_pos + cand_len)
+            {
+                cand_pos = pos;
+                cand_len = match_len;
+                cand_lst = lst;
+            }
+        }
+
+        if !accept {
+            pos += 1 + (miss_run >> SKIP_SHIFT);
+            miss_run += 1;
+            continue;
+        }
+
+        miss_run = 0;
+
+        while pos > lit && lst > 0 && match_len < MAX_MATCH_LEN && src[pos - 1] == src[lst - 1] {
+            pos -= 1;
+            lst -= 1;
+            match_len += 1;
+        }
+
+        let lit_len = pos - lit;
+        let dis = pos - lst;
+        if keen {
+            vote_keen_regime(&mut regime, lit_len);
+        } else {
+            vote_loose_regime(&mut regime, lit_len);
+        }
+
+        emit_token(
+            dst, &mut dlpos, &mut drpos, src, lit, lit_len, match_len, dis,
+        );
+
+        pos += match_len;
+        lit = pos;
+        pos = pos.max(pos_safe_bound);
+        cand_len = 0;
+    }
+
+    finish_light(src, dst, dst_cap, dlpos, drpos, literal_suffix_pos, lit)
+}
+
+#[inline(always)]
+fn vote_loose_regime(regime: &mut i32, lit_len: usize) {
+    let vote = if (7..=32).contains(&lit_len) { 2 } else { -1 };
+    *regime = (*regime + vote).clamp(0, LIGHT_REGIME_CAP);
+}
+
+#[inline(always)]
+fn vote_keen_regime(regime: &mut i32, lit_len: usize) {
+    let vote = if lit_len >= TOKEN_LIT_MAX { 3 } else { -1 };
+    *regime = (*regime + vote).clamp(0, LIGHT_REGIME_CAP);
+}
+
+#[inline(always)]
+fn finish_light(
+    src: &[u8],
+    dst: &mut [u8],
+    dst_cap: usize,
+    mut dlpos: usize,
+    drpos: usize,
+    literal_suffix_pos: usize,
+    lit: usize,
+) -> usize {
+    if drpos < dst_cap {
+        let lit_data_len = dst_cap - drpos;
+        dst.copy_within(drpos..dst_cap, dlpos);
+        dlpos += lit_data_len;
+    }
+
+    let literal_suffix_cnt = src.len() - lit;
+    dst[literal_suffix_pos..literal_suffix_pos + 8]
+        .copy_from_slice(&(literal_suffix_cnt as u64).to_le_bytes());
+    dst[dlpos..dlpos + literal_suffix_cnt].copy_from_slice(&src[lit..]);
+    dlpos += literal_suffix_cnt;
+
+    dlpos
+}
+
+#[inline(always)]
+fn light_optimal_compress<S: Simd + Copy>(simd: S, src: &[u8], dst: &mut [u8]) -> usize {
+    #[cfg(feature = "std")]
+    {
+        LIGHT_WORKSPACE.with(|cell| match cell.try_borrow_mut() {
+            Ok(mut workspace) => light_optimal_with_workspace(simd, &mut workspace, src, dst),
+            Err(_) => {
+                let mut workspace = LightWorkspace::new();
+                light_optimal_with_workspace(simd, &mut workspace, src, dst)
+            }
+        })
+    }
+
+    #[cfg(not(feature = "std"))]
+    {
+        let mut workspace = LightWorkspace::new();
+        light_optimal_with_workspace(simd, &mut workspace, src, dst)
+    }
+}
+
+#[cfg(all(not(feature = "paranoid"), target_arch = "x86_64"))]
+#[target_feature(enable = "avx2")]
+unsafe fn light_optimal_compress_avx2(src: &[u8], dst: &mut [u8]) -> usize {
+    #[cfg(feature = "std")]
+    {
+        LIGHT_WORKSPACE.with(|cell| match cell.try_borrow_mut() {
+            Ok(mut workspace) => {
+                // SAFETY: caller reached this function through AVX2 runtime dispatch.
+                unsafe { light_optimal_avx2_with_workspace(&mut workspace, src, dst) }
+            }
+            Err(_) => {
+                let mut workspace = LightWorkspace::new();
+                // SAFETY: caller reached this function through AVX2 runtime dispatch.
+                unsafe { light_optimal_avx2_with_workspace(&mut workspace, src, dst) }
+            }
+        })
+    }
+
+    #[cfg(not(feature = "std"))]
+    {
+        let mut workspace = LightWorkspace::new();
+        // SAFETY: caller reached this function through AVX2 runtime dispatch.
+        unsafe { light_optimal_avx2_with_workspace(&mut workspace, src, dst) }
+    }
+}
+
+#[cfg(all(not(feature = "paranoid"), target_arch = "x86_64"))]
+#[target_feature(enable = "avx2")]
+unsafe fn light_optimal_avx2_with_workspace(
+    workspace: &mut LightWorkspace,
+    src: &[u8],
+    dst: &mut [u8],
+) -> usize {
+    light_optimal_body(
+        workspace,
+        src,
+        dst,
+        |src, sa, rank, live, max_len, match_dis, block_start, block_end, seg_start, hard_end| {
+            // SAFETY: caller reached this function through AVX2 runtime dispatch.
+            unsafe {
+                light_find_matches_avx2(
+                    src,
+                    sa,
+                    rank,
+                    live,
+                    max_len,
+                    match_dis,
+                    block_start,
+                    block_end,
+                    seg_start,
+                    hard_end,
+                );
+            }
+        },
+    )
+}
+
+#[inline(always)]
+fn light_optimal_with_workspace<S: Simd + Copy>(
+    simd: S,
+    workspace: &mut LightWorkspace,
+    src: &[u8],
+    dst: &mut [u8],
+) -> usize {
+    #[cfg(not(feature = "paranoid"))]
+    {
+        light_optimal_body(
+            workspace,
+            src,
+            dst,
+            |src,
+             sa,
+             rank,
+             live,
+             max_len,
+             match_dis,
+             block_start,
+             block_end,
+             seg_start,
+             hard_end| {
+                paranoid_unsafe_call!(light_find_matches_simd(
+                    simd,
+                    src,
+                    sa,
+                    rank,
+                    live,
+                    max_len,
+                    match_dis,
+                    block_start,
+                    block_end,
+                    seg_start,
+                    hard_end,
+                ));
+            },
+        )
+    }
+
+    #[cfg(feature = "paranoid")]
+    {
+        let mut lcp_at = |src: &[u8], a: usize, b: usize, limit: usize| {
+            let _ = simd;
+            lcp_heavy(src, a, b, limit)
+        };
+        light_optimal_body(
+            workspace,
+            src,
+            dst,
+            |src,
+             sa,
+             rank,
+             live,
+             max_len,
+             match_dis,
+             block_start,
+             block_end,
+             seg_start,
+             hard_end| {
+                light_find_matches(
+                    src,
+                    sa,
+                    rank,
+                    live,
+                    max_len,
+                    match_dis,
+                    block_start,
+                    block_end,
+                    seg_start,
+                    hard_end,
+                    &mut lcp_at,
+                );
+            },
+        )
+    }
 }
 
 #[cfg(not(feature = "paranoid"))]
+#[allow(clippy::too_many_arguments)]
 #[inline(always)]
-fn loose_compress_impl<S: Simd>(simd: S, src: &[u8], dst: &mut [u8]) -> usize {
-    const ACCEPT_LEN: usize = 7;
-    const FIRE_AT: usize = 4;
-    const MISS_SKIP_SHIFT: usize = 5;
+unsafe fn light_find_matches_simd<S: Simd + Copy>(
+    simd: S,
+    src: &[u8],
+    sa: &[i32],
+    rank: &[u32],
+    live: &mut HeavyLiveSet,
+    max_len: &mut [u8],
+    match_dis: &mut [u32],
+    block_start: usize,
+    block_end: usize,
+    seg_start: usize,
+    hard_end: usize,
+) {
+    debug_assert_eq!(max_len.len(), block_end - block_start);
+    debug_assert_eq!(match_dis.len(), block_end - block_start);
+    debug_assert_eq!(rank.len(), sa.len());
 
-    let src_size = src.len();
+    let sa_ptr = sa.as_ptr();
+    let rank_ptr = rank.as_ptr();
+    let max_len_ptr = max_len.as_mut_ptr();
+    let match_dis_ptr = match_dis.as_mut_ptr();
+    let mut carry_len = 0usize;
+    let mut carry_dis = 0u32;
+    let set_start = block_start.max(seg_start + MIN_DISTANCE);
+    let clear_start = block_start.max(seg_start + MAX_DISTANCE + 1);
 
-    dst[0..8].copy_from_slice(&(src_size as u64).to_le_bytes());
-    let mut dlpos: usize = 8;
+    // SAFETY: caller built `sa`/`rank` for `[seg_start, seg_end)`, sized
+    // outputs to block length, and built `live` over those SA ranks.
+    unsafe {
+        for pos in block_start..block_end {
+            let block_pos = pos - block_start;
+            if pos >= set_start {
+                let live_rank = *rank_ptr.add(pos - MIN_DISTANCE - seg_start);
+                live.set_unchecked(live_rank as usize);
+            }
+            if pos >= clear_start {
+                let dead_rank = *rank_ptr.add(pos - MAX_DISTANCE - 1 - seg_start);
+                live.clear_unchecked(dead_rank as usize);
+            }
 
-    if src_size <= SMALL_LIM {
-        dst[8..8 + src_size].copy_from_slice(src);
-        return 8 + src_size;
-    }
+            if pos + MIN_MATCH_LEN > hard_end {
+                *max_len_ptr.add(block_pos) = 0;
+                continue;
+            }
+            let limit = MAX_MATCH_LEN.min(hard_end - pos);
 
-    let literal_suffix_pos = dlpos;
-    dlpos += 8;
+            if carry_len >= limit {
+                *max_len_ptr.add(block_pos) = limit as u8;
+                *match_dis_ptr.add(block_pos) = carry_dis;
+                carry_len -= 1;
+                continue;
+            }
 
-    let dst_cap = dst.len();
-    let mut drpos = dst_cap;
-    let match_end_limit = src_size - LITERAL_SUFFIX;
+            let rank_pos = *rank_ptr.add(pos - seg_start) as usize;
+            let mut best_len = 0usize;
+            let mut best_dis = 0u32;
 
-    let mut ht = RingHashTable::<LOOSE_RING_WIDTH>::new();
-    let mut pos: usize = 0;
-    let mut hpos: usize = 0;
-    let mut lit: usize = 0;
-    let mut miss_run: usize = 0;
+            macro_rules! consider_rank {
+                ($candidate_rank:expr) => {{
+                    let candidate_rank = $candidate_rank;
+                    if candidate_rank != HEAVY_NO_RANK {
+                        debug_assert!(candidate_rank < sa.len());
+                        let sa_pos = *sa_ptr.add(candidate_rank);
+                        debug_assert!(sa_pos >= 0);
+                        let candidate = seg_start + sa_pos as u32 as usize;
+                        debug_assert!(candidate <= pos - MIN_DISTANCE);
+                        let len = lcp_heavy(simd, src, pos, candidate, limit);
+                        if len > best_len {
+                            best_len = len;
+                            best_dis = (pos - candidate) as u32;
+                        }
+                    }
+                }};
+            }
 
-    let mut cand_pos: usize = 0;
-    let mut cand_len: usize = 0;
-    let mut cand_lst: usize = 0;
+            consider_rank!(live.prev_unchecked(rank_pos));
+            consider_rank!(live.next_unchecked(rank_pos));
 
-    while pos + MAX_MATCH_LEN <= match_end_limit {
-        batch_insert_ring(src, &mut ht, &mut hpos, pos);
-
-        let (mut match_len, mut lst) = if pos > HASHTAB_LAG {
-            find_ring_match_loose(simd, src, &ht, pos)
-        } else {
-            (0, 0)
-        };
-
-        let pos_safe_bound = pos;
-        let pend = pos - lit;
-        let mut accept = match_len >= ACCEPT_LEN;
-
-        if !accept {
-            if pend == FIRE_AT {
-                if cand_len != 0
-                    && (match_len < MIN_MATCH_LEN || cand_pos + cand_len >= pos + match_len)
-                {
-                    pos = cand_pos;
-                    lst = cand_lst;
-                    match_len = cand_len;
+            if best_len >= MIN_MATCH_LEN {
+                *max_len_ptr.add(block_pos) = best_len as u8;
+                *match_dis_ptr.add(block_pos) = best_dis;
+                if best_len >= limit {
+                    let room = src.len() - (pos + limit);
+                    let ext_limit = room.min(DIS_LIM);
+                    let ext = lcp_heavy(
+                        simd,
+                        src,
+                        pos + limit,
+                        pos - best_dis as usize + limit,
+                        ext_limit,
+                    );
+                    carry_len = limit + ext - 1;
+                    carry_dis = best_dis;
+                } else {
+                    carry_len = best_len - 1;
+                    carry_dis = best_dis;
                 }
-                accept = match_len >= MIN_MATCH_LEN;
-            } else if match_len >= MIN_MATCH_LEN
-                && (cand_len == 0 || pos + match_len >= cand_pos + cand_len)
-            {
-                cand_pos = pos;
-                cand_len = match_len;
-                cand_lst = lst;
-            }
-        }
-
-        if !accept {
-            pos += 1 + (miss_run >> MISS_SKIP_SHIFT);
-            miss_run += 1;
-            continue;
-        }
-
-        miss_run = 0;
-
-        // Backward match extension
-        while pos > lit && lst > 0 && match_len < MAX_MATCH_LEN && src[pos - 1] == src[lst - 1] {
-            pos -= 1;
-            lst -= 1;
-            match_len += 1;
-        }
-
-        let lit_len = pos - lit;
-        let dis = pos - lst;
-
-        emit_token(
-            dst, &mut dlpos, &mut drpos, src, lit, lit_len, match_len, dis,
-        );
-
-        pos += match_len;
-        lit = pos;
-        pos = pos.max(pos_safe_bound);
-        cand_len = 0;
-
-        loop {
-            if pos + MAX_MATCH_LEN > match_end_limit {
-                break;
-            }
-
-            batch_insert_ring(src, &mut ht, &mut hpos, pos);
-            let (chain_match_len, chain_lst) = if pos > HASHTAB_LAG {
-                find_ring_match_loose(simd, src, &ht, pos)
             } else {
-                (0, 0)
-            };
-
-            if chain_match_len < MIN_MATCH_LEN {
-                break;
+                *max_len_ptr.add(block_pos) = 0;
+                carry_len = carry_len.saturating_sub(1);
             }
-
-            let dis = pos - chain_lst;
-            emit_match_token(dst, &mut dlpos, chain_match_len, dis);
-
-            pos += chain_match_len;
-            lit = pos;
         }
     }
+}
 
-    if drpos < dst_cap {
-        let lit_data_len = dst_cap - drpos;
-        dst.copy_within(drpos..dst_cap, dlpos);
-        dlpos += lit_data_len;
+#[cfg(all(not(feature = "paranoid"), target_arch = "x86_64"))]
+#[allow(clippy::too_many_arguments)]
+#[target_feature(enable = "avx2")]
+unsafe fn light_find_matches_avx2(
+    src: &[u8],
+    sa: &[i32],
+    rank: &[u32],
+    live: &mut HeavyLiveSet,
+    max_len: &mut [u8],
+    match_dis: &mut [u32],
+    block_start: usize,
+    block_end: usize,
+    seg_start: usize,
+    hard_end: usize,
+) {
+    debug_assert_eq!(max_len.len(), block_end - block_start);
+    debug_assert_eq!(match_dis.len(), block_end - block_start);
+    debug_assert_eq!(rank.len(), sa.len());
+
+    let src_ptr = src.as_ptr();
+    let sa_ptr = sa.as_ptr();
+    let rank_ptr = rank.as_ptr();
+    let max_len_ptr = max_len.as_mut_ptr();
+    let match_dis_ptr = match_dis.as_mut_ptr();
+    let mut carry_len = 0usize;
+    let mut carry_dis = 0u32;
+    let set_start = block_start.max(seg_start + MIN_DISTANCE);
+    let clear_start = block_start.max(seg_start + MAX_DISTANCE + 1);
+
+    // SAFETY: caller built `sa`/`rank` for `[seg_start, seg_end)`, sized
+    // outputs to block length, and built `live` over those SA ranks. Runtime
+    // dispatch selected AVX2, and every LCP call is clipped to valid input.
+    unsafe {
+        macro_rules! lcp_at {
+            ($a:expr, $b:expr, $limit:expr) => {{
+                'lcp: {
+                    let a = $a;
+                    let b = $b;
+                    let limit = $limit;
+                    debug_assert!(a + limit <= src.len());
+                    debug_assert!(b + limit <= src.len());
+
+                    let mut off = 0usize;
+                    while off + VECTOR_WIDTH <= limit {
+                        let av = _mm256_lddqu_si256(src_ptr.add(a + off).cast::<__m256i>());
+                        let bv = _mm256_lddqu_si256(src_ptr.add(b + off).cast::<__m256i>());
+                        let eq = _mm256_cmpeq_epi8(av, bv);
+                        let diff = !(_mm256_movemask_epi8(eq) as u32);
+                        let len = diff.trailing_zeros() as usize;
+                        off += len;
+                        if len < VECTOR_WIDTH {
+                            break 'lcp off;
+                        }
+                    }
+                    while off + 8 <= limit {
+                        let diff = ptr::read_unaligned(src_ptr.add(a + off).cast::<u64>()).to_le()
+                            ^ ptr::read_unaligned(src_ptr.add(b + off).cast::<u64>()).to_le();
+                        if diff != 0 {
+                            break 'lcp off + (diff.trailing_zeros() as usize >> 3);
+                        }
+                        off += 8;
+                    }
+                    while off < limit {
+                        if *src_ptr.add(a + off) != *src_ptr.add(b + off) {
+                            break;
+                        }
+                        off += 1;
+                    }
+                    off
+                }
+            }};
+        }
+
+        for pos in block_start..block_end {
+            let block_pos = pos - block_start;
+            if pos >= set_start {
+                let live_rank = *rank_ptr.add(pos - MIN_DISTANCE - seg_start);
+                live.set_unchecked(live_rank as usize);
+            }
+            if pos >= clear_start {
+                let dead_rank = *rank_ptr.add(pos - MAX_DISTANCE - 1 - seg_start);
+                live.clear_unchecked(dead_rank as usize);
+            }
+
+            if pos + MIN_MATCH_LEN > hard_end {
+                *max_len_ptr.add(block_pos) = 0;
+                continue;
+            }
+            let limit = MAX_MATCH_LEN.min(hard_end - pos);
+
+            if carry_len >= limit {
+                *max_len_ptr.add(block_pos) = limit as u8;
+                *match_dis_ptr.add(block_pos) = carry_dis;
+                carry_len -= 1;
+                continue;
+            }
+
+            let rank_pos = *rank_ptr.add(pos - seg_start) as usize;
+            let mut best_len = 0usize;
+            let mut best_dis = 0u32;
+
+            macro_rules! consider_rank {
+                ($candidate_rank:expr) => {{
+                    let candidate_rank = $candidate_rank;
+                    if candidate_rank != HEAVY_NO_RANK {
+                        debug_assert!(candidate_rank < sa.len());
+                        let sa_pos = *sa_ptr.add(candidate_rank);
+                        debug_assert!(sa_pos >= 0);
+                        let candidate = seg_start + sa_pos as u32 as usize;
+                        debug_assert!(candidate <= pos - MIN_DISTANCE);
+                        let len = lcp_at!(pos, candidate, limit);
+                        if len > best_len {
+                            best_len = len;
+                            best_dis = (pos - candidate) as u32;
+                        }
+                    }
+                }};
+            }
+
+            consider_rank!(live.prev_unchecked(rank_pos));
+            consider_rank!(live.next_unchecked(rank_pos));
+
+            if best_len >= MIN_MATCH_LEN {
+                *max_len_ptr.add(block_pos) = best_len as u8;
+                *match_dis_ptr.add(block_pos) = best_dis;
+                if best_len >= limit {
+                    let room = src.len() - (pos + limit);
+                    let ext_limit = room.min(DIS_LIM);
+                    let ext = lcp_at!(pos + limit, pos - best_dis as usize + limit, ext_limit);
+                    carry_len = limit + ext - 1;
+                    carry_dis = best_dis;
+                } else {
+                    carry_len = best_len - 1;
+                    carry_dis = best_dis;
+                }
+            } else {
+                *max_len_ptr.add(block_pos) = 0;
+                carry_len = carry_len.saturating_sub(1);
+            }
+        }
     }
-
-    let literal_suffix_cnt = src_size - lit;
-    dst[literal_suffix_pos..literal_suffix_pos + 8]
-        .copy_from_slice(&(literal_suffix_cnt as u64).to_le_bytes());
-    dst[dlpos..dlpos + literal_suffix_cnt].copy_from_slice(&src[lit..]);
-    dlpos += literal_suffix_cnt;
-
-    dlpos
 }
 
 #[cfg(feature = "paranoid")]
-#[inline(always)]
-fn loose_compress_impl(src: &[u8], dst: &mut [u8]) -> usize {
-    const ACCEPT_LEN: usize = 7;
-    const FIRE_AT: usize = 4;
-    const MISS_SKIP_SHIFT: usize = 5;
+#[allow(clippy::too_many_arguments)]
+fn light_find_matches<F>(
+    src: &[u8],
+    sa: &[i32],
+    rank: &[u32],
+    live: &mut HeavyLiveSet,
+    max_len: &mut [u8],
+    match_dis: &mut [u32],
+    block_start: usize,
+    block_end: usize,
+    seg_start: usize,
+    hard_end: usize,
+    lcp_at: &mut F,
+) where
+    F: FnMut(&[u8], usize, usize, usize) -> usize,
+{
+    let mut carry_len = 0usize;
+    let mut carry_dis = 0u32;
+    let set_start = block_start.max(seg_start + MIN_DISTANCE);
+    let clear_start = block_start.max(seg_start + MAX_DISTANCE + 1);
 
-    let src_size = src.len();
-
-    dst[0..8].copy_from_slice(&(src_size as u64).to_le_bytes());
-    let mut dlpos: usize = 8;
-
-    if src_size <= SMALL_LIM {
-        dst[8..8 + src_size].copy_from_slice(src);
-        return 8 + src_size;
-    }
-
-    let literal_suffix_pos = dlpos;
-    dlpos += 8;
-
-    let dst_cap = dst.len();
-    let mut drpos = dst_cap;
-    let match_end_limit = src_size - LITERAL_SUFFIX;
-
-    let mut ht = RingHashTable::<LOOSE_RING_WIDTH>::new();
-    let mut pos: usize = 0;
-    let mut hpos: usize = 0;
-    let mut lit: usize = 0;
-    let mut miss_run: usize = 0;
-
-    let mut cand_pos: usize = 0;
-    let mut cand_len: usize = 0;
-    let mut cand_lst: usize = 0;
-
-    while pos + MAX_MATCH_LEN <= match_end_limit {
-        batch_insert_ring(src, &mut ht, &mut hpos, pos);
-
-        let (mut match_len, mut lst) = if pos > HASHTAB_LAG {
-            find_ring_match(src, &ht, pos)
-        } else {
-            (0, 0)
-        };
-
-        let pos_safe_bound = pos;
-        let pend = pos - lit;
-        let mut accept = match_len >= ACCEPT_LEN;
-
-        if !accept {
-            if pend == FIRE_AT {
-                if cand_len != 0
-                    && (match_len < MIN_MATCH_LEN || cand_pos + cand_len >= pos + match_len)
-                {
-                    pos = cand_pos;
-                    lst = cand_lst;
-                    match_len = cand_len;
-                }
-                accept = match_len >= MIN_MATCH_LEN;
-            } else if match_len >= MIN_MATCH_LEN
-                && (cand_len == 0 || pos + match_len >= cand_pos + cand_len)
-            {
-                cand_pos = pos;
-                cand_len = match_len;
-                cand_lst = lst;
-            }
+    for pos in block_start..block_end {
+        let block_pos = pos - block_start;
+        if pos >= set_start {
+            live.set(rank[pos - MIN_DISTANCE - seg_start] as usize);
+        }
+        if pos >= clear_start {
+            live.clear(rank[pos - MAX_DISTANCE - 1 - seg_start] as usize);
         }
 
-        if !accept {
-            pos += 1 + (miss_run >> MISS_SKIP_SHIFT);
-            miss_run += 1;
+        if pos + MIN_MATCH_LEN > hard_end {
+            max_len[block_pos] = 0;
+            continue;
+        }
+        let limit = MAX_MATCH_LEN.min(hard_end - pos);
+
+        if carry_len >= limit {
+            max_len[block_pos] = limit as u8;
+            match_dis[block_pos] = carry_dis;
+            carry_len -= 1;
             continue;
         }
 
-        miss_run = 0;
+        let rank_pos = rank[pos - seg_start] as usize;
+        let mut best_len = 0usize;
+        let mut best_dis = 0u32;
 
-        // Backward match extension
-        while pos > lit && lst > 0 && match_len < MAX_MATCH_LEN && src[pos - 1] == src[lst - 1] {
-            pos -= 1;
-            lst -= 1;
-            match_len += 1;
+        if let Some(candidate_rank) = live.prev(rank_pos) {
+            let candidate = seg_start + sa[candidate_rank] as u32 as usize;
+            let len = lcp_at(src, pos, candidate, limit);
+            if len > best_len {
+                best_len = len;
+                best_dis = (pos - candidate) as u32;
+            }
+        }
+        if let Some(candidate_rank) = live.next(rank_pos) {
+            let candidate = seg_start + sa[candidate_rank] as u32 as usize;
+            let len = lcp_at(src, pos, candidate, limit);
+            if len > best_len {
+                best_len = len;
+                best_dis = (pos - candidate) as u32;
+            }
         }
 
-        let lit_len = pos - lit;
-        let dis = pos - lst;
+        if best_len >= MIN_MATCH_LEN {
+            max_len[block_pos] = best_len as u8;
+            match_dis[block_pos] = best_dis;
+            if best_len >= limit {
+                let room = src.len() - (pos + limit);
+                let ext_limit = room.min(DIS_LIM);
+                let ext = lcp_at(src, pos + limit, pos - best_dis as usize + limit, ext_limit);
+                carry_len = limit + ext - 1;
+                carry_dis = best_dis;
+            } else {
+                carry_len = best_len - 1;
+                carry_dis = best_dis;
+            }
+        } else {
+            max_len[block_pos] = 0;
+            carry_len = carry_len.saturating_sub(1);
+        }
+    }
+}
 
-        emit_token(
-            dst, &mut dlpos, &mut drpos, src, lit, lit_len, match_len, dis,
+#[cfg(not(feature = "paranoid"))]
+fn light_optimal_body<F>(
+    workspace: &mut LightWorkspace,
+    src: &[u8],
+    dst: &mut [u8],
+    mut find_matches: F,
+) -> usize
+where
+    F: FnMut(
+        &[u8],
+        &[i32],
+        &[u32],
+        &mut HeavyLiveSet,
+        &mut [u8],
+        &mut [u32],
+        usize,
+        usize,
+        usize,
+        usize,
+    ),
+{
+    let src_size = src.len();
+
+    dst[0..8].copy_from_slice(&(src_size as u64).to_le_bytes());
+    let mut dlpos = HEADER_SIZE;
+
+    if src_size <= SMALL_LIM {
+        dst[dlpos..dlpos + src_size].copy_from_slice(src);
+        return dlpos + src_size;
+    }
+
+    let dst_cap = dst.len();
+    let mut drpos = dst_cap;
+    let literal_suffix_pos = dlpos;
+    dlpos += 8;
+    let match_end_limit = src_size - LITERAL_SUFFIX;
+    let mut lit = 0usize;
+
+    let LightWorkspace {
+        sorter,
+        sa,
+        rank,
+        live,
+        max_len,
+        match_dis,
+        ..
+    } = workspace;
+
+    for block_start in (0..src_size).step_by(LIGHT_OPTIMAL_BLOCK_SIZE) {
+        let block_end = (block_start + LIGHT_OPTIMAL_BLOCK_SIZE).min(src_size);
+        let block_len = block_end - block_start;
+        let seg_start = block_start.saturating_sub(MAX_DISTANCE);
+        let seg_end = src_size.min(block_end + LIGHT_OPTIMAL_PAD_LEN);
+        let seg_len = seg_end - seg_start;
+        debug_assert!(seg_len <= i32::MAX as usize);
+
+        sa.resize(seg_len, 0);
+        rank.resize(seg_len, 0);
+        sorter.suffix_array_with_rank(&src[seg_start..seg_end], sa, rank);
+
+        if max_len.len() != block_len {
+            max_len.resize(block_len, 0);
+        }
+        if match_dis.len() != block_len {
+            match_dis.resize(block_len, 0);
+        }
+
+        let hard_end = block_end.min(match_end_limit);
+        let init_limit = if block_start >= MIN_DISTANCE && block_start - MIN_DISTANCE >= seg_start {
+            u32::try_from(block_start - MIN_DISTANCE - seg_start + 1).unwrap()
+        } else {
+            0
+        };
+        live.build(sa.as_slice(), seg_len, init_limit);
+
+        find_matches(
+            src,
+            sa.as_slice(),
+            rank.as_slice(),
+            live,
+            max_len,
+            match_dis,
+            block_start,
+            block_end,
+            seg_start,
+            hard_end,
         );
 
-        pos += match_len;
-        lit = pos;
-        pos = pos.max(pos_safe_bound);
-        cand_len = 0;
-
-        loop {
-            if pos + MAX_MATCH_LEN > match_end_limit {
-                break;
+        let max_len_ptr = max_len.as_ptr();
+        let match_dis_ptr = match_dis.as_ptr();
+        // SAFETY: finder filled match arrays for this block, and match lengths
+        // are clipped to stay inside the block/hard end.
+        unsafe {
+            let mut pos = block_start;
+            while pos < hard_end {
+                let i = pos - block_start;
+                let len = *max_len_ptr.add(i) as usize;
+                if len >= MIN_MATCH_LEN {
+                    if pos + 1 < hard_end {
+                        let next_len = *max_len_ptr.add(i + 1) as usize;
+                        if next_len > len {
+                            pos += 1;
+                            continue;
+                        }
+                    }
+                    emit_token(
+                        dst,
+                        &mut dlpos,
+                        &mut drpos,
+                        src,
+                        lit,
+                        pos - lit,
+                        len,
+                        *match_dis_ptr.add(i) as usize,
+                    );
+                    pos += len;
+                    lit = pos;
+                } else {
+                    pos += 1;
+                }
             }
-
-            batch_insert_ring(src, &mut ht, &mut hpos, pos);
-            let (chain_match_len, chain_lst) = if pos > HASHTAB_LAG {
-                find_ring_match(src, &ht, pos)
-            } else {
-                (0, 0)
-            };
-
-            if chain_match_len < MIN_MATCH_LEN {
-                break;
-            }
-
-            let dis = pos - chain_lst;
-            emit_match_token(dst, &mut dlpos, chain_match_len, dis);
-
-            pos += chain_match_len;
-            lit = pos;
         }
     }
 
-    if drpos < dst_cap {
-        let lit_data_len = dst_cap - drpos;
-        dst.copy_within(drpos..dst_cap, dlpos);
-        dlpos += lit_data_len;
+    finish_light(src, dst, dst_cap, dlpos, drpos, literal_suffix_pos, lit)
+}
+
+#[cfg(feature = "paranoid")]
+fn light_optimal_body<F>(
+    workspace: &mut LightWorkspace,
+    src: &[u8],
+    dst: &mut [u8],
+    mut find_matches: F,
+) -> usize
+where
+    F: FnMut(
+        &[u8],
+        &[i32],
+        &[u32],
+        &mut HeavyLiveSet,
+        &mut [u8],
+        &mut [u32],
+        usize,
+        usize,
+        usize,
+        usize,
+    ),
+{
+    let src_size = src.len();
+
+    dst[0..8].copy_from_slice(&(src_size as u64).to_le_bytes());
+    let mut dlpos = HEADER_SIZE;
+
+    if src_size <= SMALL_LIM {
+        dst[dlpos..dlpos + src_size].copy_from_slice(src);
+        return dlpos + src_size;
     }
 
-    let literal_suffix_cnt = src_size - lit;
-    dst[literal_suffix_pos..literal_suffix_pos + 8]
-        .copy_from_slice(&(literal_suffix_cnt as u64).to_le_bytes());
-    dst[dlpos..dlpos + literal_suffix_cnt].copy_from_slice(&src[lit..]);
-    dlpos += literal_suffix_cnt;
+    let dst_cap = dst.len();
+    let mut drpos = dst_cap;
+    let literal_suffix_pos = dlpos;
+    dlpos += 8;
+    let match_end_limit = src_size - LITERAL_SUFFIX;
+    let mut lit = 0usize;
 
-    dlpos
+    let LightWorkspace {
+        sorter,
+        sa,
+        rank,
+        live,
+        max_len,
+        match_dis,
+    } = workspace;
+
+    for block_start in (0..src_size).step_by(LIGHT_OPTIMAL_BLOCK_SIZE) {
+        let block_end = (block_start + LIGHT_OPTIMAL_BLOCK_SIZE).min(src_size);
+        let block_len = block_end - block_start;
+        let seg_start = block_start.saturating_sub(MAX_DISTANCE);
+        let seg_end = src_size.min(block_end + LIGHT_OPTIMAL_PAD_LEN);
+        let seg_len = seg_end - seg_start;
+        debug_assert!(seg_len <= i32::MAX as usize);
+
+        sa.resize(seg_len, 0);
+        rank.resize(seg_len, 0);
+        sorter.suffix_array_with_rank(&src[seg_start..seg_end], sa, rank);
+
+        if max_len.len() != block_len {
+            max_len.resize(block_len, 0);
+        }
+        if match_dis.len() != block_len {
+            match_dis.resize(block_len, 0);
+        }
+
+        let hard_end = block_end.min(match_end_limit);
+        let init_limit = if block_start >= MIN_DISTANCE && block_start - MIN_DISTANCE >= seg_start {
+            u32::try_from(block_start - MIN_DISTANCE - seg_start + 1).unwrap()
+        } else {
+            0
+        };
+        live.build(sa.as_slice(), seg_len, init_limit);
+
+        find_matches(
+            src,
+            sa.as_slice(),
+            rank.as_slice(),
+            live,
+            max_len,
+            match_dis,
+            block_start,
+            block_end,
+            seg_start,
+            hard_end,
+        );
+
+        let mut pos = block_start;
+        while pos < hard_end {
+            let i = pos - block_start;
+            let len = max_len[i] as usize;
+            if len >= MIN_MATCH_LEN {
+                if pos + 1 < hard_end {
+                    let next_len = max_len[i + 1] as usize;
+                    if next_len > len {
+                        pos += 1;
+                        continue;
+                    }
+                }
+                emit_token(
+                    dst,
+                    &mut dlpos,
+                    &mut drpos,
+                    src,
+                    lit,
+                    pos - lit,
+                    len,
+                    match_dis[i] as usize,
+                );
+                pos += len;
+                lit = pos;
+            } else {
+                pos += 1;
+            }
+        }
+    }
+
+    finish_light(src, dst, dst_cap, dlpos, drpos, literal_suffix_pos, lit)
 }
 
 #[cfg(not(feature = "paranoid"))]
@@ -2908,11 +3260,11 @@ mod tests {
     }
 
     #[test]
-    fn compress_bound_covers_level2() {
+    fn compress_bound_covers_level4() {
         let data = vec![0x42; HEAVY_SMALL_LIM];
-        let compressed = compress_level(&data, 2).unwrap();
+        let compressed = compress_level(&data, 4).unwrap();
         assert!(compressed.len() <= compress_bound(data.len()));
-        assert!(compressed.len() <= compress_bound_level(data.len(), 2).unwrap());
+        assert!(compressed.len() <= compress_bound_level(data.len(), 4).unwrap());
     }
 
     #[test]
@@ -2922,8 +3274,8 @@ mod tests {
             Err(Error::InvalidLevel { level: -2 })
         );
         assert_eq!(
-            compress_into_level(b"input", &mut [0; 64], 3),
-            Err(Error::InvalidLevel { level: 3 })
+            compress_into_level(b"input", &mut [0; 64], 5),
+            Err(Error::InvalidLevel { level: 5 })
         );
     }
 }
@@ -3009,10 +3361,10 @@ mod kani_proofs {
         let batch_ready = hpos.checked_add(HASHTAB_LAG + LATEST_BATCH);
         kani::assume(batch_ready.is_some());
         kani::assume(pos >= batch_ready.unwrap());
-        kani::assume(i < LATEST_INSERTS_PER_BATCH);
+        kani::assume(i < LATEST_BATCH);
 
         let insert_pos = hpos + i;
-        assert!(insert_pos.checked_add(4).unwrap() <= src_len);
+        assert!(insert_pos.checked_add(8).unwrap() <= src_len);
     }
 
     #[kani::proof]
@@ -3044,7 +3396,7 @@ mod kani_proofs {
         let width = if loose {
             LOOSE_RING_WIDTH
         } else {
-            DEFAULT_RING_WIDTH
+            KEEN_RING_WIDTH
         };
         kani::assume((next as usize) < width);
 

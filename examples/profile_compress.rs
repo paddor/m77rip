@@ -8,8 +8,8 @@ use std::process::Command;
 // SAFETY: These declarations match the C wrapper ABI. Calls validate pointer
 // lifetimes and capacities at each call site below.
 unsafe extern "C" {
-    fn misa77_compress_bound(src_size: u64, level: u8) -> u64;
-    fn misa77_compress(src: *const u8, src_size: u64, dst: *mut u8, dst_cap: u64, level: u8)
+    fn misa77_compress_bound(src_size: u64, level: i8) -> u64;
+    fn misa77_compress(src: *const u8, src_size: u64, dst: *mut u8, dst_cap: u64, level: i8)
     -> u64;
 }
 
@@ -23,7 +23,7 @@ fn cpu_nanos() -> u64 {
     ts.tv_sec as u64 * 1_000_000_000 + ts.tv_nsec as u64
 }
 
-fn c_compress_into(data: &[u8], dst: &mut [u8], level: u8) -> usize {
+fn c_compress_into(data: &[u8], dst: &mut [u8], level: i8) -> usize {
     // SAFETY: Pointers come from live borrowed slices. `dst` has the exact
     // capacity passed to the C function.
     (unsafe {
@@ -73,8 +73,8 @@ fn main() {
         .unwrap_or("corpus/silesia/dickens");
     let iters: u64 = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(2000);
     let level: i8 = args.get(4).and_then(|s| s.parse().ok()).unwrap_or(1);
-    if codec == "cpp" && !(0..=2).contains(&level) {
-        panic!("C++ misa77 supports only levels 0 through 2");
+    if codec == "cpp" && !(-1..=4).contains(&level) {
+        panic!("C++ misa77 supports only levels -1 through 4");
     }
 
     let data = std::fs::read(file).unwrap_or_else(|e| panic!("{file}: {e}"));
@@ -86,7 +86,7 @@ fn main() {
 
     let bound = if codec == "cpp" {
         // SAFETY: C function has no pointer arguments and accepts any u64 size.
-        (unsafe { misa77_compress_bound(data.len() as u64, level as u8) }) as usize
+        (unsafe { misa77_compress_bound(data.len() as u64, level) }) as usize
     } else {
         m77rip::compress_bound_level(data.len(), level).unwrap()
     };
@@ -106,7 +106,7 @@ fn main() {
                 c_compress_into(
                     std::hint::black_box(&data),
                     std::hint::black_box(&mut comp_buf),
-                    level as u8,
+                    level,
                 );
             }
             _ => panic!("unknown codec: {codec}"),
@@ -127,7 +127,7 @@ fn main() {
                 c_compress_into(
                     std::hint::black_box(&data),
                     std::hint::black_box(&mut comp_buf),
-                    level as u8,
+                    level,
                 );
             }
             _ => {}

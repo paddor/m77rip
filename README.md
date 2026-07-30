@@ -38,50 +38,38 @@ assert_eq!(written, size);
 |---------|---------|-------------|
 | `std` | yes | Standard library. Enables runtime SIMD detection and `std::error::Error` impl. |
 | `alloc` | yes (via `std`) | Enables `decompress()` which returns a `Vec<u8>`. |
-| `paranoid` | no | Forbids unsafe in m77rip encode/decode crates. Local primitives use bounds-checked operations. Level 2 suffix sorting uses the safe `libsais` API. Output is byte-identical. |
+| `paranoid` | no | Forbids unsafe in m77rip encode/decode crates. Local primitives use bounds-checked operations. Suffix sorting uses the safe `libsais` API. |
 | `c-reference` | no | Builds the vendored C++ reference implementation for benchmarking. |
 
 ## Performance
 
-### Pipeline summary
-
-![Summary](https://raw.githubusercontent.com/paddor/m77rip/main/doc/charts/x86_64/summary.svg)
-
-Stacked bars show encode + transfer at 100 MB/s + decode for levels `-1`, `0`,
-`1`, and `2`. Each panel aggregates compressible and incompressible Silesia
-inputs. Lower is better. Benchmarks use the first 1 MiB from each Silesia
-file, single-threaded on x86_64 (AVX2). Best of 10 rounds at 20 ms each.
+Benchmarks use the first 1 MiB from each Silesia file, single-threaded on
+x86_64 (AVX2). Best of 10 rounds at 20 ms each. Tables report geomeans across
+all 12 files. Values in parentheses compare against vendored misa77 v0.6.0 at
+the same integer level. Encode/decode parentheses are speed ratios.
+Compression-ratio parentheses are ratio-vs-ratio values, so higher is better.
 
 ### Default build
 
-Tables report geomeans across files in each corpus class. Values in
-parentheses compare against C++ misa77. Encode/decode parentheses are speed
-ratios. Compression-ratio parentheses are ratio-vs-ratio values, so higher is
-better. Level `-1` has no C++ misa77 peer, so it compares against C++ level 0.
-
-| Level | Corpus | Encode MB/s (vs misa77) | Decode MB/s (vs misa77) | Ratio (vs misa77) |
-|-------|--------|--------------------------|--------------------------|-------------------|
-| `L-1` | Compressible | 389 (5.96x) | 3519 (0.62x) | 1.63 (0.64x) |
-| `L-1` | Incompressible | 627 (13.77x) | 4383 (0.65x) | 1.18 (0.88x) |
-| `L0` | Compressible | 121 (1.85x) | 5187 (0.91x) | 2.49 (0.98x) |
-| `L0` | Incompressible | 87.4 (1.92x) | 5867 (0.87x) | 1.27 (0.94x) |
-| `L1` | Compressible | 89.0 (1.37x) | 5542 (1.10x) | 2.64 (0.98x) |
-| `L1` | Incompressible | 40.5 (1.27x) | 2997 (1.11x) | 1.49 (0.99x) |
-| `L2` | Compressible | 13.1 (1.44x) | 4731 (0.90x) | 2.98 (1.00x) |
-| `L2` | Incompressible | 12.2 (1.34x) | 2917 (0.85x) | 1.54 (1.00x) |
+| Level | Encode MB/s (vs misa77) | Decode MB/s (vs misa77) | Ratio (vs misa77) |
+|-------|--------------------------|--------------------------|-------------------|
+| `-1` | 258 (0.90x) | 5436 (0.91x) | 1.955 (1.00x) |
+| `0` | 187 (0.94x) | 5847 (0.91x) | 2.052 (1.00x) |
+| `1` | 57.4 (0.97x) | 6641 (0.90x) | 2.169 (1.00x) |
+| `2` | 47.1 (1.05x) | 5296 (0.89x) | 2.294 (1.00x) |
+| `3` | 16.8 (1.70x) | 5073 (0.87x) | 2.440 (0.99x) |
+| `4` | 12.9 (1.45x) | 4059 (0.88x) | 2.525 (1.00x) |
 
 ### Paranoid build (`--features paranoid`, no unsafe in m77rip crates)
 
-| Level | Corpus | Encode MB/s (vs misa77) | Decode MB/s (vs misa77) | Ratio (vs misa77) |
-|-------|--------|--------------------------|--------------------------|-------------------|
-| `L-1` | Compressible | 249 (3.81x) | 1466 (0.26x) | 1.66 (0.65x) |
-| `L-1` | Incompressible | 239 (5.25x) | 1560 (0.23x) | 1.20 (0.89x) |
-| `L0` | Compressible | 72.7 (1.11x) | 1949 (0.34x) | 2.49 (0.98x) |
-| `L0` | Incompressible | 61.2 (1.34x) | 2861 (0.42x) | 1.27 (0.94x) |
-| `L1` | Compressible | 79.5 (1.23x) | 2060 (0.41x) | 2.64 (0.98x) |
-| `L1` | Incompressible | 38.9 (1.22x) | 1240 (0.46x) | 1.49 (0.99x) |
-| `L2` | Compressible | 9.8 (1.07x) | 1212 (0.23x) | 2.98 (1.00x) |
-| `L2` | Incompressible | 10.5 (1.15x) | 764 (0.22x) | 1.54 (1.00x) |
+| Level | Encode MB/s (vs misa77) | Decode MB/s (vs misa77) | Ratio (vs misa77) |
+|-------|--------------------------|--------------------------|-------------------|
+| `-1` | 210 (0.73x) | 2611 (0.44x) | 1.955 (1.00x) |
+| `0` | 148 (0.75x) | 2406 (0.37x) | 2.052 (1.00x) |
+| `1` | 53.8 (0.91x) | 2600 (0.35x) | 2.169 (1.00x) |
+| `2` | 41.5 (0.93x) | 2074 (0.35x) | 2.294 (1.00x) |
+| `3` | 13.9 (1.40x) | 1926 (0.33x) | 2.440 (0.99x) |
+| `4` | 9.8 (1.10x) | 1038 (0.22x) | 2.525 (1.00x) |
 
 ## `no_std` and 32-bit support
 
@@ -102,9 +90,9 @@ instead of runtime cpuid. Compile with `-C target-cpu=native` or
 
 The encoder requires `std` and has only been tested on 64-bit targets.
 
-`compress_level` accepts levels `-1`, `0`, `1`, and `2`. Level `-1` is
-fastest, level `0` is the C++-ratio middle ground, level `1` favors ratio,
-and level `2` writes misa77 v0.5 heavy-format streams.
+`compress_level` accepts integer levels `-1` through `4`. Levels `-1` through
+`3` write light-format streams. Level `4` writes heavy-format streams. Level
+`1` is the default.
 
 ## License
 
