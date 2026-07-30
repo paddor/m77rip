@@ -38,7 +38,7 @@ assert_eq!(written, size);
 |---------|---------|-------------|
 | `std` | yes | Standard library. Enables runtime SIMD detection and `std::error::Error` impl. |
 | `alloc` | yes (via `std`) | Enables `decompress()` which returns a `Vec<u8>`. |
-| `paranoid` | no | Forbids unsafe in m77rip encode/decode crates. Local primitives use bounds-checked operations. Suffix sorting uses the safe `libsais` API. Output is byte-identical. |
+| `paranoid` | no | Forbids unsafe in m77rip encode/decode crates. Local primitives use bounds-checked operations. Suffix sorting uses the safe `libsais` API. |
 | `c-reference` | no | Builds the vendored C++ reference implementation for benchmarking. |
 
 ## Performance
@@ -68,7 +68,7 @@ Compression-ratio parentheses are ratio-vs-ratio values, so higher is better.
 | `0` | 148 (0.75x) | 2406 (0.37x) | 2.052 (1.00x) |
 | `1` | 53.8 (0.91x) | 2600 (0.35x) | 2.169 (1.00x) |
 | `2` | 41.5 (0.93x) | 2074 (0.35x) | 2.294 (1.00x) |
-| `3` | 10.4 (0.99x) | 1946 (0.33x) | 2.473 (1.00x) |
+| `3` | 13.9 (1.40x) | 1926 (0.33x) | 2.440 (0.99x) |
 | `4` | 9.8 (1.10x) | 1038 (0.22x) | 2.525 (1.00x) |
 
 ## `no_std` and 32-bit support

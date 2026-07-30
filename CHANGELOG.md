@@ -11,6 +11,8 @@ All notable changes to this project will be documented in this file.
   parsing.
 - Optimized default level `3` encoding with an AVX2 match finder and a lazy
   suffix-array parser.
+- Optimized paranoid level `3` encoding with the same safe lazy suffix-array
+  parser.
 - Updated benchmark and profiling tools to accept signed compression levels.
 
 ## [0.1.6] - 2026-07-29

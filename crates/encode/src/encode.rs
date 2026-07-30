@@ -22,8 +22,6 @@ const LIGHT_REGIME_CAP: i32 = 64;
 const LIGHT_REGIME_THRESHOLD: i32 = 32;
 const LIGHT_OPTIMAL_BLOCK_SIZE: usize = 3 << 17;
 const LIGHT_OPTIMAL_PAD_LEN: usize = MAX_MATCH_LEN + 1;
-#[cfg(feature = "paranoid")]
-const LIGHT_OPTIMAL_DP_INF: usize = usize::MAX;
 const HEAVY_BLOCK_SIZE: usize = 1 << 21;
 const HEAVY_PAD_LEN: usize = HEAVY_MAX_MATCH_LEN + 1;
 const HEAVY_DP_INF: usize = usize::MAX;
@@ -1121,14 +1119,6 @@ impl HeavyWorkspace {
     }
 }
 
-#[cfg(feature = "paranoid")]
-#[derive(Clone, Copy)]
-struct LightTokenRecord {
-    match_start: usize,
-    len: u8,
-    dis: u32,
-}
-
 struct LightWorkspace {
     sorter: SaisWorkspace,
     sa: Vec<i32>,
@@ -1136,14 +1126,6 @@ struct LightWorkspace {
     live: HeavyLiveSet,
     max_len: Vec<u8>,
     match_dis: Vec<u32>,
-    #[cfg(feature = "paranoid")]
-    dp: Vec<usize>,
-    #[cfg(feature = "paranoid")]
-    arrival_len: Vec<u8>,
-    #[cfg(feature = "paranoid")]
-    lit_runs: Vec<usize>,
-    #[cfg(feature = "paranoid")]
-    block_tokens: Vec<LightTokenRecord>,
 }
 
 impl LightWorkspace {
@@ -1155,14 +1137,6 @@ impl LightWorkspace {
             live: HeavyLiveSet::default(),
             max_len: Vec::new(),
             match_dis: Vec::new(),
-            #[cfg(feature = "paranoid")]
-            dp: Vec::new(),
-            #[cfg(feature = "paranoid")]
-            arrival_len: Vec::new(),
-            #[cfg(feature = "paranoid")]
-            lit_runs: Vec::new(),
-            #[cfg(feature = "paranoid")]
-            block_tokens: Vec::new(),
         }
     }
 }
@@ -1909,16 +1883,6 @@ fn finish_light(
     dlpos
 }
 
-#[cfg(feature = "paranoid")]
-#[inline(always)]
-fn light_literal_extras(run: usize) -> usize {
-    if run < TOKEN_LIT_MAX {
-        0
-    } else {
-        1 + (run - TOKEN_LIT_MAX) / 255
-    }
-}
-
 #[inline(always)]
 fn light_optimal_compress<S: Simd + Copy>(simd: S, src: &[u8], dst: &mut [u8]) -> usize {
     #[cfg(feature = "std")]
@@ -2582,14 +2546,7 @@ where
         live,
         max_len,
         match_dis,
-        dp,
-        arrival_len,
-        lit_runs,
-        block_tokens,
     } = workspace;
-
-    let mut qstar = 0usize;
-    let mut qstar_cost = EXT_HEADER_SIZE;
 
     for block_start in (0..src_size).step_by(LIGHT_OPTIMAL_BLOCK_SIZE) {
         let block_end = (block_start + LIGHT_OPTIMAL_BLOCK_SIZE).min(src_size);
@@ -2631,134 +2588,34 @@ where
             hard_end,
         );
 
-        dp.clear();
-        dp.resize(block_len + 1, LIGHT_OPTIMAL_DP_INF);
-        if arrival_len.len() != block_len + 1 {
-            arrival_len.resize(block_len + 1, 0);
-        }
-        if lit_runs.len() != block_len {
-            lit_runs.resize(block_len, 0);
-        }
-
-        let mut literal_run = block_start - qstar;
-        let mut literal_cost = qstar_cost + literal_run + light_literal_extras(literal_run);
-        let mut next_extra_at = if literal_run < TOKEN_LIT_MAX {
-            TOKEN_LIT_MAX
-        } else {
-            literal_run + 255 - (literal_run - TOKEN_LIT_MAX) % 255
-        };
-        if block_start == 0 {
-            dp[0] = qstar_cost;
-        }
-
-        for pos in block_start..=block_end {
+        let mut pos = block_start;
+        while pos < hard_end {
             let i = pos - block_start;
-            if pos > block_start {
-                literal_run += 1;
-                if literal_run >= next_extra_at {
-                    literal_cost += 1;
-                    next_extra_at = literal_run + 255;
-                }
-                literal_cost += 1;
-                if dp[i] <= literal_cost {
-                    literal_cost = dp[i];
-                    literal_run = 0;
-                    next_extra_at = TOKEN_LIT_MAX;
-                }
-            }
-
-            let longest = if i < block_len {
-                max_len[i] as usize
-            } else {
-                0
-            };
-            if longest >= MIN_MATCH_LEN {
-                let cost = literal_cost + 3;
-                lit_runs[i] = literal_run;
-                for len in MIN_MATCH_LEN..=longest {
-                    let target = i + len;
-                    if cost < dp[target] {
-                        dp[target] = cost;
-                        arrival_len[target] = len as u8;
+            let len = max_len[i] as usize;
+            if len >= MIN_MATCH_LEN {
+                if pos + 1 < hard_end {
+                    let next_len = max_len[i + 1] as usize;
+                    if next_len > len {
+                        pos += 1;
+                        continue;
                     }
                 }
+                emit_token(
+                    dst,
+                    &mut dlpos,
+                    &mut drpos,
+                    src,
+                    lit,
+                    pos - lit,
+                    len,
+                    match_dis[i] as usize,
+                );
+                pos += len;
+                lit = pos;
+            } else {
+                pos += 1;
             }
         }
-
-        let (commit, commit_cost) = if block_end < src_size {
-            let commit = block_end - literal_run;
-            (
-                commit,
-                literal_cost - literal_run - light_literal_extras(literal_run),
-            )
-        } else {
-            let mut best_total = qstar_cost + (src_size - qstar);
-            let mut best_commit = qstar;
-            let mut best_commit_cost = qstar_cost;
-            for pos in block_start..=block_end {
-                let cost = dp[pos - block_start];
-                if cost == LIGHT_OPTIMAL_DP_INF {
-                    continue;
-                }
-                let total = cost + (src_size - pos);
-                if total < best_total {
-                    best_total = total;
-                    best_commit = pos;
-                    best_commit_cost = cost;
-                }
-            }
-            (best_commit, best_commit_cost)
-        };
-
-        block_tokens.clear();
-        let mut boundary = commit;
-        while boundary > qstar {
-            let matched_len = arrival_len[boundary - block_start] as usize;
-            if matched_len < MIN_MATCH_LEN {
-                return 0;
-            }
-            let Some(match_start) = boundary.checked_sub(matched_len) else {
-                return 0;
-            };
-            if match_start < block_start {
-                return 0;
-            }
-            let origin = match_start - block_start;
-            let lit_run = lit_runs[origin];
-            let Some(next) = boundary
-                .checked_sub(matched_len)
-                .and_then(|pos| pos.checked_sub(lit_run))
-            else {
-                return 0;
-            };
-            if next < block_start && next != qstar {
-                return 0;
-            }
-            block_tokens.push(LightTokenRecord {
-                match_start,
-                len: matched_len as u8,
-                dis: match_dis[origin],
-            });
-            boundary = next;
-        }
-
-        for token in block_tokens.iter().rev() {
-            let lit_len = token.match_start - lit;
-            emit_token(
-                dst,
-                &mut dlpos,
-                &mut drpos,
-                src,
-                lit,
-                lit_len,
-                token.len as usize,
-                token.dis as usize,
-            );
-            lit = token.match_start + token.len as usize;
-        }
-
-        qstar = commit;
-        qstar_cost = commit_cost;
     }
 
     finish_light(src, dst, dst_cap, dlpos, drpos, literal_suffix_pos, lit)
