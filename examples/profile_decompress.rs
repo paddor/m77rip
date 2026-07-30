@@ -8,8 +8,8 @@ use std::process::Command;
 // SAFETY: These declarations match the C wrapper ABI. Calls validate pointer
 // lifetimes and capacities at each call site below.
 unsafe extern "C" {
-    fn misa77_compress_bound(src_size: u64, level: u8) -> u64;
-    fn misa77_compress(src: *const u8, src_size: u64, dst: *mut u8, dst_cap: u64, level: u8)
+    fn misa77_compress_bound(src_size: u64, level: i8) -> u64;
+    fn misa77_compress(src: *const u8, src_size: u64, dst: *mut u8, dst_cap: u64, level: i8)
     -> u64;
     fn misa77_decompress(src: *const u8, src_size: u64, dst: *mut u8, dst_cap: u64) -> u64;
 }
@@ -24,7 +24,7 @@ fn cpu_nanos() -> u64 {
     ts.tv_sec as u64 * 1_000_000_000 + ts.tv_nsec as u64
 }
 
-fn c_compress(data: &[u8], level: u8) -> Vec<u8> {
+fn c_compress(data: &[u8], level: i8) -> Vec<u8> {
     // SAFETY: C function has no pointer arguments and accepts any u64 size.
     let bound = unsafe { misa77_compress_bound(data.len() as u64, level) } as usize;
     let mut out = vec![0u8; bound];
@@ -80,15 +80,15 @@ fn main() {
         .unwrap_or("corpus/silesia/dickens");
     let iters: u64 = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(50_000);
     let level: i8 = args.get(4).and_then(|s| s.parse().ok()).unwrap_or(0);
-    if codec == "cpp" && !(0..=2).contains(&level) {
-        panic!("C++ misa77 supports only levels 0 through 2");
+    if codec == "cpp" && !(-1..=4).contains(&level) {
+        panic!("C++ misa77 supports only levels -1 through 4");
     }
 
     let data = std::fs::read(file).unwrap_or_else(|e| panic!("{file}: {e}"));
-    let compressed = if level < 0 {
-        m77rip::compress_level(&data, level).unwrap()
+    let compressed = if codec == "cpp" {
+        c_compress(&data, level)
     } else {
-        c_compress(&data, level as u8)
+        m77rip::compress_level(&data, level).unwrap()
     };
     let original_size = data.len();
 

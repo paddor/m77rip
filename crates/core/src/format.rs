@@ -1,6 +1,18 @@
 /// Width of unconditional vector operations (bytes).
 pub const VECTOR_WIDTH: usize = 32;
 
+/// Lowest valid compression level.
+pub const MIN_LEVEL: i8 = -1;
+
+/// Highest valid compression level.
+pub const MAX_LEVEL: i8 = 4;
+
+/// Default compression level.
+pub const DEFAULT_LEVEL: i8 = 1;
+
+/// First level that emits the heavy format.
+pub const HEAVY_LEVEL_MIN: i8 = 4;
+
 /// Low 56 bits of the stream header store decompressed size.
 pub const SIZE_MASK: u64 = 0x00FF_FFFF_FFFF_FFFF;
 

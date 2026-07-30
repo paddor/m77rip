@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+- Updated compression levels to the misa77 v0.6.0 model: integer levels
+  `-1..=4`, level `1` default, light streams for `-1..=3`, and heavy streams
+  for `4`.
+- Ported the v0.6 light encoders for blitz, swift, loose, keen, and optimal
+  parsing.
+- Updated benchmark and profiling tools to accept signed compression levels.
+
 ## [0.1.6] - 2026-07-29
 
 - Corrected the paranoid level `2` README benchmark rows after refreshing the
