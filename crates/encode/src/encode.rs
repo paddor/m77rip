@@ -22,6 +22,7 @@ const LIGHT_REGIME_CAP: i32 = 64;
 const LIGHT_REGIME_THRESHOLD: i32 = 32;
 const LIGHT_OPTIMAL_BLOCK_SIZE: usize = 3 << 17;
 const LIGHT_OPTIMAL_PAD_LEN: usize = MAX_MATCH_LEN + 1;
+#[cfg(feature = "paranoid")]
 const LIGHT_OPTIMAL_DP_INF: usize = usize::MAX;
 const HEAVY_BLOCK_SIZE: usize = 1 << 21;
 const HEAVY_PAD_LEN: usize = HEAVY_MAX_MATCH_LEN + 1;
@@ -327,6 +328,13 @@ fn compress_dispatch_level_keen(src: &[u8], dst: &mut [u8]) -> usize {
 #[cfg(not(feature = "paranoid"))]
 #[inline(never)]
 fn compress_dispatch_level_light_optimal(src: &[u8], dst: &mut [u8]) -> usize {
+    #[cfg(all(feature = "std", target_arch = "x86_64"))]
+    if std::arch::is_x86_feature_detected!("avx2") {
+        // SAFETY: Runtime feature check guarantees AVX2. Light match-finder
+        // callers keep all vector reads inside `src`.
+        return unsafe { light_optimal_compress_avx2(src, dst) };
+    }
+
     let level_obj = fearless_simd::Level::new();
     fearless_simd::dispatch!(level_obj, simd => light_optimal_compress(simd, src, dst))
 }
@@ -500,6 +508,7 @@ impl HeavyLiveSet {
         }
     }
 
+    #[cfg(feature = "paranoid")]
     #[inline(always)]
     fn set(&mut self, index: usize) {
         let word0 = index >> 6;
@@ -519,6 +528,7 @@ impl HeavyLiveSet {
         self.l2[index >> 18] |= 1u64 << ((index >> 12) & 63);
     }
 
+    #[cfg(feature = "paranoid")]
     #[inline(always)]
     fn clear(&mut self, index: usize) {
         let word0 = index >> 6;
@@ -592,6 +602,7 @@ impl HeavyLiveSet {
         }
     }
 
+    #[cfg(feature = "paranoid")]
     #[inline(always)]
     fn prev(&self, index: usize) -> Option<usize> {
         let mut word0 = index >> 6;
@@ -629,6 +640,7 @@ impl HeavyLiveSet {
         None
     }
 
+    #[cfg(feature = "paranoid")]
     #[inline(always)]
     fn next(&self, index: usize) -> Option<usize> {
         let mut word0 = index >> 6;
@@ -1109,21 +1121,7 @@ impl HeavyWorkspace {
     }
 }
 
-#[derive(Clone, Copy)]
-struct LightArrival {
-    dis: u32,
-    len: u8,
-    lit_run: usize,
-}
-
-impl LightArrival {
-    const ZERO: Self = Self {
-        dis: 0,
-        len: 0,
-        lit_run: 0,
-    };
-}
-
+#[cfg(feature = "paranoid")]
 #[derive(Clone, Copy)]
 struct LightTokenRecord {
     match_start: usize,
@@ -1138,8 +1136,13 @@ struct LightWorkspace {
     live: HeavyLiveSet,
     max_len: Vec<u8>,
     match_dis: Vec<u32>,
+    #[cfg(feature = "paranoid")]
     dp: Vec<usize>,
-    arrivals: Vec<LightArrival>,
+    #[cfg(feature = "paranoid")]
+    arrival_len: Vec<u8>,
+    #[cfg(feature = "paranoid")]
+    lit_runs: Vec<usize>,
+    #[cfg(feature = "paranoid")]
     block_tokens: Vec<LightTokenRecord>,
 }
 
@@ -1152,8 +1155,13 @@ impl LightWorkspace {
             live: HeavyLiveSet::default(),
             max_len: Vec::new(),
             match_dis: Vec::new(),
+            #[cfg(feature = "paranoid")]
             dp: Vec::new(),
-            arrivals: Vec::new(),
+            #[cfg(feature = "paranoid")]
+            arrival_len: Vec::new(),
+            #[cfg(feature = "paranoid")]
+            lit_runs: Vec::new(),
+            #[cfg(feature = "paranoid")]
             block_tokens: Vec::new(),
         }
     }
@@ -1901,6 +1909,7 @@ fn finish_light(
     dlpos
 }
 
+#[cfg(feature = "paranoid")]
 #[inline(always)]
 fn light_literal_extras(run: usize) -> usize {
     if run < TOKEN_LIT_MAX {
@@ -1930,6 +1939,63 @@ fn light_optimal_compress<S: Simd + Copy>(simd: S, src: &[u8], dst: &mut [u8]) -
     }
 }
 
+#[cfg(all(not(feature = "paranoid"), target_arch = "x86_64"))]
+#[target_feature(enable = "avx2")]
+unsafe fn light_optimal_compress_avx2(src: &[u8], dst: &mut [u8]) -> usize {
+    #[cfg(feature = "std")]
+    {
+        LIGHT_WORKSPACE.with(|cell| match cell.try_borrow_mut() {
+            Ok(mut workspace) => {
+                // SAFETY: caller reached this function through AVX2 runtime dispatch.
+                unsafe { light_optimal_avx2_with_workspace(&mut workspace, src, dst) }
+            }
+            Err(_) => {
+                let mut workspace = LightWorkspace::new();
+                // SAFETY: caller reached this function through AVX2 runtime dispatch.
+                unsafe { light_optimal_avx2_with_workspace(&mut workspace, src, dst) }
+            }
+        })
+    }
+
+    #[cfg(not(feature = "std"))]
+    {
+        let mut workspace = LightWorkspace::new();
+        // SAFETY: caller reached this function through AVX2 runtime dispatch.
+        unsafe { light_optimal_avx2_with_workspace(&mut workspace, src, dst) }
+    }
+}
+
+#[cfg(all(not(feature = "paranoid"), target_arch = "x86_64"))]
+#[target_feature(enable = "avx2")]
+unsafe fn light_optimal_avx2_with_workspace(
+    workspace: &mut LightWorkspace,
+    src: &[u8],
+    dst: &mut [u8],
+) -> usize {
+    light_optimal_body(
+        workspace,
+        src,
+        dst,
+        |src, sa, rank, live, max_len, match_dis, block_start, block_end, seg_start, hard_end| {
+            // SAFETY: caller reached this function through AVX2 runtime dispatch.
+            unsafe {
+                light_find_matches_avx2(
+                    src,
+                    sa,
+                    rank,
+                    live,
+                    max_len,
+                    match_dis,
+                    block_start,
+                    block_end,
+                    seg_start,
+                    hard_end,
+                );
+            }
+        },
+    )
+}
+
 #[inline(always)]
 fn light_optimal_with_workspace<S: Simd + Copy>(
     simd: S,
@@ -1937,20 +2003,329 @@ fn light_optimal_with_workspace<S: Simd + Copy>(
     src: &[u8],
     dst: &mut [u8],
 ) -> usize {
-    let mut lcp_at = |src: &[u8], a: usize, b: usize, limit: usize| {
-        #[cfg(not(feature = "paranoid"))]
-        {
-            lcp_heavy(simd, src, a, b, limit)
-        }
-        #[cfg(feature = "paranoid")]
-        {
+    #[cfg(not(feature = "paranoid"))]
+    {
+        light_optimal_body(
+            workspace,
+            src,
+            dst,
+            |src,
+             sa,
+             rank,
+             live,
+             max_len,
+             match_dis,
+             block_start,
+             block_end,
+             seg_start,
+             hard_end| {
+                paranoid_unsafe_call!(light_find_matches_simd(
+                    simd,
+                    src,
+                    sa,
+                    rank,
+                    live,
+                    max_len,
+                    match_dis,
+                    block_start,
+                    block_end,
+                    seg_start,
+                    hard_end,
+                ));
+            },
+        )
+    }
+
+    #[cfg(feature = "paranoid")]
+    {
+        let mut lcp_at = |src: &[u8], a: usize, b: usize, limit: usize| {
             let _ = simd;
             lcp_heavy(src, a, b, limit)
-        }
-    };
-    light_optimal_body(workspace, src, dst, &mut lcp_at)
+        };
+        light_optimal_body(
+            workspace,
+            src,
+            dst,
+            |src,
+             sa,
+             rank,
+             live,
+             max_len,
+             match_dis,
+             block_start,
+             block_end,
+             seg_start,
+             hard_end| {
+                light_find_matches(
+                    src,
+                    sa,
+                    rank,
+                    live,
+                    max_len,
+                    match_dis,
+                    block_start,
+                    block_end,
+                    seg_start,
+                    hard_end,
+                    &mut lcp_at,
+                );
+            },
+        )
+    }
 }
 
+#[cfg(not(feature = "paranoid"))]
+#[allow(clippy::too_many_arguments)]
+#[inline(always)]
+unsafe fn light_find_matches_simd<S: Simd + Copy>(
+    simd: S,
+    src: &[u8],
+    sa: &[i32],
+    rank: &[u32],
+    live: &mut HeavyLiveSet,
+    max_len: &mut [u8],
+    match_dis: &mut [u32],
+    block_start: usize,
+    block_end: usize,
+    seg_start: usize,
+    hard_end: usize,
+) {
+    debug_assert_eq!(max_len.len(), block_end - block_start);
+    debug_assert_eq!(match_dis.len(), block_end - block_start);
+    debug_assert_eq!(rank.len(), sa.len());
+
+    let sa_ptr = sa.as_ptr();
+    let rank_ptr = rank.as_ptr();
+    let max_len_ptr = max_len.as_mut_ptr();
+    let match_dis_ptr = match_dis.as_mut_ptr();
+    let mut carry_len = 0usize;
+    let mut carry_dis = 0u32;
+    let set_start = block_start.max(seg_start + MIN_DISTANCE);
+    let clear_start = block_start.max(seg_start + MAX_DISTANCE + 1);
+
+    // SAFETY: caller built `sa`/`rank` for `[seg_start, seg_end)`, sized
+    // outputs to block length, and built `live` over those SA ranks.
+    unsafe {
+        for pos in block_start..block_end {
+            let block_pos = pos - block_start;
+            if pos >= set_start {
+                let live_rank = *rank_ptr.add(pos - MIN_DISTANCE - seg_start);
+                live.set_unchecked(live_rank as usize);
+            }
+            if pos >= clear_start {
+                let dead_rank = *rank_ptr.add(pos - MAX_DISTANCE - 1 - seg_start);
+                live.clear_unchecked(dead_rank as usize);
+            }
+
+            if pos + MIN_MATCH_LEN > hard_end {
+                *max_len_ptr.add(block_pos) = 0;
+                continue;
+            }
+            let limit = MAX_MATCH_LEN.min(hard_end - pos);
+
+            if carry_len >= limit {
+                *max_len_ptr.add(block_pos) = limit as u8;
+                *match_dis_ptr.add(block_pos) = carry_dis;
+                carry_len -= 1;
+                continue;
+            }
+
+            let rank_pos = *rank_ptr.add(pos - seg_start) as usize;
+            let mut best_len = 0usize;
+            let mut best_dis = 0u32;
+
+            macro_rules! consider_rank {
+                ($candidate_rank:expr) => {{
+                    let candidate_rank = $candidate_rank;
+                    if candidate_rank != HEAVY_NO_RANK {
+                        debug_assert!(candidate_rank < sa.len());
+                        let sa_pos = *sa_ptr.add(candidate_rank);
+                        debug_assert!(sa_pos >= 0);
+                        let candidate = seg_start + sa_pos as u32 as usize;
+                        debug_assert!(candidate <= pos - MIN_DISTANCE);
+                        let len = lcp_heavy(simd, src, pos, candidate, limit);
+                        if len > best_len {
+                            best_len = len;
+                            best_dis = (pos - candidate) as u32;
+                        }
+                    }
+                }};
+            }
+
+            consider_rank!(live.prev_unchecked(rank_pos));
+            consider_rank!(live.next_unchecked(rank_pos));
+
+            if best_len >= MIN_MATCH_LEN {
+                *max_len_ptr.add(block_pos) = best_len as u8;
+                *match_dis_ptr.add(block_pos) = best_dis;
+                if best_len >= limit {
+                    let room = src.len() - (pos + limit);
+                    let ext_limit = room.min(DIS_LIM);
+                    let ext = lcp_heavy(
+                        simd,
+                        src,
+                        pos + limit,
+                        pos - best_dis as usize + limit,
+                        ext_limit,
+                    );
+                    carry_len = limit + ext - 1;
+                    carry_dis = best_dis;
+                } else {
+                    carry_len = best_len - 1;
+                    carry_dis = best_dis;
+                }
+            } else {
+                *max_len_ptr.add(block_pos) = 0;
+                carry_len = carry_len.saturating_sub(1);
+            }
+        }
+    }
+}
+
+#[cfg(all(not(feature = "paranoid"), target_arch = "x86_64"))]
+#[allow(clippy::too_many_arguments)]
+#[target_feature(enable = "avx2")]
+unsafe fn light_find_matches_avx2(
+    src: &[u8],
+    sa: &[i32],
+    rank: &[u32],
+    live: &mut HeavyLiveSet,
+    max_len: &mut [u8],
+    match_dis: &mut [u32],
+    block_start: usize,
+    block_end: usize,
+    seg_start: usize,
+    hard_end: usize,
+) {
+    debug_assert_eq!(max_len.len(), block_end - block_start);
+    debug_assert_eq!(match_dis.len(), block_end - block_start);
+    debug_assert_eq!(rank.len(), sa.len());
+
+    let src_ptr = src.as_ptr();
+    let sa_ptr = sa.as_ptr();
+    let rank_ptr = rank.as_ptr();
+    let max_len_ptr = max_len.as_mut_ptr();
+    let match_dis_ptr = match_dis.as_mut_ptr();
+    let mut carry_len = 0usize;
+    let mut carry_dis = 0u32;
+    let set_start = block_start.max(seg_start + MIN_DISTANCE);
+    let clear_start = block_start.max(seg_start + MAX_DISTANCE + 1);
+
+    // SAFETY: caller built `sa`/`rank` for `[seg_start, seg_end)`, sized
+    // outputs to block length, and built `live` over those SA ranks. Runtime
+    // dispatch selected AVX2, and every LCP call is clipped to valid input.
+    unsafe {
+        macro_rules! lcp_at {
+            ($a:expr, $b:expr, $limit:expr) => {{
+                'lcp: {
+                    let a = $a;
+                    let b = $b;
+                    let limit = $limit;
+                    debug_assert!(a + limit <= src.len());
+                    debug_assert!(b + limit <= src.len());
+
+                    let mut off = 0usize;
+                    while off + VECTOR_WIDTH <= limit {
+                        let av = _mm256_lddqu_si256(src_ptr.add(a + off).cast::<__m256i>());
+                        let bv = _mm256_lddqu_si256(src_ptr.add(b + off).cast::<__m256i>());
+                        let eq = _mm256_cmpeq_epi8(av, bv);
+                        let diff = !(_mm256_movemask_epi8(eq) as u32);
+                        let len = diff.trailing_zeros() as usize;
+                        off += len;
+                        if len < VECTOR_WIDTH {
+                            break 'lcp off;
+                        }
+                    }
+                    while off + 8 <= limit {
+                        let diff = ptr::read_unaligned(src_ptr.add(a + off).cast::<u64>()).to_le()
+                            ^ ptr::read_unaligned(src_ptr.add(b + off).cast::<u64>()).to_le();
+                        if diff != 0 {
+                            break 'lcp off + (diff.trailing_zeros() as usize >> 3);
+                        }
+                        off += 8;
+                    }
+                    while off < limit {
+                        if *src_ptr.add(a + off) != *src_ptr.add(b + off) {
+                            break;
+                        }
+                        off += 1;
+                    }
+                    off
+                }
+            }};
+        }
+
+        for pos in block_start..block_end {
+            let block_pos = pos - block_start;
+            if pos >= set_start {
+                let live_rank = *rank_ptr.add(pos - MIN_DISTANCE - seg_start);
+                live.set_unchecked(live_rank as usize);
+            }
+            if pos >= clear_start {
+                let dead_rank = *rank_ptr.add(pos - MAX_DISTANCE - 1 - seg_start);
+                live.clear_unchecked(dead_rank as usize);
+            }
+
+            if pos + MIN_MATCH_LEN > hard_end {
+                *max_len_ptr.add(block_pos) = 0;
+                continue;
+            }
+            let limit = MAX_MATCH_LEN.min(hard_end - pos);
+
+            if carry_len >= limit {
+                *max_len_ptr.add(block_pos) = limit as u8;
+                *match_dis_ptr.add(block_pos) = carry_dis;
+                carry_len -= 1;
+                continue;
+            }
+
+            let rank_pos = *rank_ptr.add(pos - seg_start) as usize;
+            let mut best_len = 0usize;
+            let mut best_dis = 0u32;
+
+            macro_rules! consider_rank {
+                ($candidate_rank:expr) => {{
+                    let candidate_rank = $candidate_rank;
+                    if candidate_rank != HEAVY_NO_RANK {
+                        debug_assert!(candidate_rank < sa.len());
+                        let sa_pos = *sa_ptr.add(candidate_rank);
+                        debug_assert!(sa_pos >= 0);
+                        let candidate = seg_start + sa_pos as u32 as usize;
+                        debug_assert!(candidate <= pos - MIN_DISTANCE);
+                        let len = lcp_at!(pos, candidate, limit);
+                        if len > best_len {
+                            best_len = len;
+                            best_dis = (pos - candidate) as u32;
+                        }
+                    }
+                }};
+            }
+
+            consider_rank!(live.prev_unchecked(rank_pos));
+            consider_rank!(live.next_unchecked(rank_pos));
+
+            if best_len >= MIN_MATCH_LEN {
+                *max_len_ptr.add(block_pos) = best_len as u8;
+                *match_dis_ptr.add(block_pos) = best_dis;
+                if best_len >= limit {
+                    let room = src.len() - (pos + limit);
+                    let ext_limit = room.min(DIS_LIM);
+                    let ext = lcp_at!(pos + limit, pos - best_dis as usize + limit, ext_limit);
+                    carry_len = limit + ext - 1;
+                    carry_dis = best_dis;
+                } else {
+                    carry_len = best_len - 1;
+                    carry_dis = best_dis;
+                }
+            } else {
+                *max_len_ptr.add(block_pos) = 0;
+                carry_len = carry_len.saturating_sub(1);
+            }
+        }
+    }
+}
+
+#[cfg(feature = "paranoid")]
 #[allow(clippy::too_many_arguments)]
 fn light_find_matches<F>(
     src: &[u8],
@@ -2035,14 +2410,153 @@ fn light_find_matches<F>(
     }
 }
 
+#[cfg(not(feature = "paranoid"))]
 fn light_optimal_body<F>(
     workspace: &mut LightWorkspace,
     src: &[u8],
     dst: &mut [u8],
-    lcp_at: &mut F,
+    mut find_matches: F,
 ) -> usize
 where
-    F: FnMut(&[u8], usize, usize, usize) -> usize,
+    F: FnMut(
+        &[u8],
+        &[i32],
+        &[u32],
+        &mut HeavyLiveSet,
+        &mut [u8],
+        &mut [u32],
+        usize,
+        usize,
+        usize,
+        usize,
+    ),
+{
+    let src_size = src.len();
+
+    dst[0..8].copy_from_slice(&(src_size as u64).to_le_bytes());
+    let mut dlpos = HEADER_SIZE;
+
+    if src_size <= SMALL_LIM {
+        dst[dlpos..dlpos + src_size].copy_from_slice(src);
+        return dlpos + src_size;
+    }
+
+    let dst_cap = dst.len();
+    let mut drpos = dst_cap;
+    let literal_suffix_pos = dlpos;
+    dlpos += 8;
+    let match_end_limit = src_size - LITERAL_SUFFIX;
+    let mut lit = 0usize;
+
+    let LightWorkspace {
+        sorter,
+        sa,
+        rank,
+        live,
+        max_len,
+        match_dis,
+        ..
+    } = workspace;
+
+    for block_start in (0..src_size).step_by(LIGHT_OPTIMAL_BLOCK_SIZE) {
+        let block_end = (block_start + LIGHT_OPTIMAL_BLOCK_SIZE).min(src_size);
+        let block_len = block_end - block_start;
+        let seg_start = block_start.saturating_sub(MAX_DISTANCE);
+        let seg_end = src_size.min(block_end + LIGHT_OPTIMAL_PAD_LEN);
+        let seg_len = seg_end - seg_start;
+        debug_assert!(seg_len <= i32::MAX as usize);
+
+        sa.resize(seg_len, 0);
+        rank.resize(seg_len, 0);
+        sorter.suffix_array_with_rank(&src[seg_start..seg_end], sa, rank);
+
+        if max_len.len() != block_len {
+            max_len.resize(block_len, 0);
+        }
+        if match_dis.len() != block_len {
+            match_dis.resize(block_len, 0);
+        }
+
+        let hard_end = block_end.min(match_end_limit);
+        let init_limit = if block_start >= MIN_DISTANCE && block_start - MIN_DISTANCE >= seg_start {
+            u32::try_from(block_start - MIN_DISTANCE - seg_start + 1).unwrap()
+        } else {
+            0
+        };
+        live.build(sa.as_slice(), seg_len, init_limit);
+
+        find_matches(
+            src,
+            sa.as_slice(),
+            rank.as_slice(),
+            live,
+            max_len,
+            match_dis,
+            block_start,
+            block_end,
+            seg_start,
+            hard_end,
+        );
+
+        let max_len_ptr = max_len.as_ptr();
+        let match_dis_ptr = match_dis.as_ptr();
+        // SAFETY: finder filled match arrays for this block, and match lengths
+        // are clipped to stay inside the block/hard end.
+        unsafe {
+            let mut pos = block_start;
+            while pos < hard_end {
+                let i = pos - block_start;
+                let len = *max_len_ptr.add(i) as usize;
+                if len >= MIN_MATCH_LEN {
+                    if pos + 1 < hard_end {
+                        let next_len = *max_len_ptr.add(i + 1) as usize;
+                        if next_len > len {
+                            pos += 1;
+                            continue;
+                        }
+                    }
+                    emit_token(
+                        dst,
+                        &mut dlpos,
+                        &mut drpos,
+                        src,
+                        lit,
+                        pos - lit,
+                        len,
+                        *match_dis_ptr.add(i) as usize,
+                    );
+                    pos += len;
+                    lit = pos;
+                } else {
+                    pos += 1;
+                }
+            }
+        }
+    }
+
+    finish_light(src, dst, dst_cap, dlpos, drpos, literal_suffix_pos, lit)
+}
+
+#[cfg(feature = "paranoid")]
+fn light_optimal_body<F>(
+    workspace: &mut LightWorkspace,
+    src: &[u8],
+    dst: &mut [u8],
+    mut find_matches: F,
+) -> usize
+where
+    F: FnMut(
+        &[u8],
+        &[i32],
+        &[u32],
+        &mut HeavyLiveSet,
+        &mut [u8],
+        &mut [u32],
+        usize,
+        usize,
+        usize,
+        usize,
+    ),
 {
     let src_size = src.len();
 
@@ -2069,7 +2583,8 @@ where
         max_len,
         match_dis,
         dp,
-        arrivals,
+        arrival_len,
+        lit_runs,
         block_tokens,
     } = workspace;
 
@@ -2088,10 +2603,12 @@ where
         rank.resize(seg_len, 0);
         sorter.suffix_array_with_rank(&src[seg_start..seg_end], sa, rank);
 
-        max_len.clear();
-        max_len.resize(block_len, 0);
-        match_dis.clear();
-        match_dis.resize(block_len, 0);
+        if max_len.len() != block_len {
+            max_len.resize(block_len, 0);
+        }
+        if match_dis.len() != block_len {
+            match_dis.resize(block_len, 0);
+        }
 
         let hard_end = block_end.min(match_end_limit);
         let init_limit = if block_start >= MIN_DISTANCE && block_start - MIN_DISTANCE >= seg_start {
@@ -2101,7 +2618,7 @@ where
         };
         live.build(sa.as_slice(), seg_len, init_limit);
 
-        light_find_matches(
+        find_matches(
             src,
             sa.as_slice(),
             rank.as_slice(),
@@ -2112,13 +2629,16 @@ where
             block_end,
             seg_start,
             hard_end,
-            lcp_at,
         );
 
         dp.clear();
         dp.resize(block_len + 1, LIGHT_OPTIMAL_DP_INF);
-        arrivals.clear();
-        arrivals.resize(block_len + 1, LightArrival::ZERO);
+        if arrival_len.len() != block_len + 1 {
+            arrival_len.resize(block_len + 1, 0);
+        }
+        if lit_runs.len() != block_len {
+            lit_runs.resize(block_len, 0);
+        }
 
         let mut literal_run = block_start - qstar;
         let mut literal_cost = qstar_cost + literal_run + light_literal_extras(literal_run);
@@ -2154,15 +2674,12 @@ where
             };
             if longest >= MIN_MATCH_LEN {
                 let cost = literal_cost + 3;
+                lit_runs[i] = literal_run;
                 for len in MIN_MATCH_LEN..=longest {
                     let target = i + len;
                     if cost < dp[target] {
                         dp[target] = cost;
-                        arrivals[target] = LightArrival {
-                            dis: match_dis[i],
-                            len: len as u8,
-                            lit_run: literal_run,
-                        };
+                        arrival_len[target] = len as u8;
                     }
                 }
             }
@@ -2196,21 +2713,31 @@ where
         block_tokens.clear();
         let mut boundary = commit;
         while boundary > qstar {
-            let arrival = arrivals[boundary - block_start];
-            let matched_len = arrival.len as usize;
+            let matched_len = arrival_len[boundary - block_start] as usize;
+            if matched_len < MIN_MATCH_LEN {
+                return 0;
+            }
+            let Some(match_start) = boundary.checked_sub(matched_len) else {
+                return 0;
+            };
+            if match_start < block_start {
+                return 0;
+            }
+            let origin = match_start - block_start;
+            let lit_run = lit_runs[origin];
             let Some(next) = boundary
                 .checked_sub(matched_len)
-                .and_then(|pos| pos.checked_sub(arrival.lit_run))
+                .and_then(|pos| pos.checked_sub(lit_run))
             else {
                 return 0;
             };
-            if matched_len < MIN_MATCH_LEN || (next < block_start && next != qstar) {
+            if next < block_start && next != qstar {
                 return 0;
             }
             block_tokens.push(LightTokenRecord {
-                match_start: boundary - matched_len,
-                len: arrival.len,
-                dis: arrival.dis,
+                match_start,
+                len: matched_len as u8,
+                dis: match_dis[origin],
             });
             boundary = next;
         }
