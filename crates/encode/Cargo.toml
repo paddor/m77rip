@@ -1,7 +1,7 @@
 [package]
 name = "m77rip-encode"
 description = "misa77 block compression for m77rip"
-version = "0.1.6"
+version = "0.1.7"
 edition = "2024"
 rust-version = "1.89"
 license = "MIT"
@@ -13,7 +13,7 @@ std = ["m77rip-core/std"]
 paranoid = ["m77rip-core/paranoid"]
 
 [dependencies]
-m77rip-core = { version = "0.1.6", path = "../core", default-features = false }
+m77rip-core = { version = "0.1.7", path = "../core", default-features = false }
 fearless_simd = "0.6.0"
 libsais = { version = "0.2.0", default-features = false }
 
