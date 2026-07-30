@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## [Unreleased]
+## [0.1.7] - 2026-07-30
 
 - Updated compression levels to the misa77 v0.6.0 model: integer levels
   `-1..=4`, level `1` default, light streams for `-1..=3`, and heavy streams
