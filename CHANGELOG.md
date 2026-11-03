@@ -8,13 +8,15 @@ All notable changes to this project will be documented in this file.
   `paranoid` stays as a no-op feature.
 - Rewrote the decoder around groups of 16 tokens that copy through
   fixed-size windows, so the safe hot loops need almost no bounds checks.
-  Over the first MiB of each Silesia file, light decoding is 1.6x to 1.9x
-  and heavy decoding 2.7x the speed of the former paranoid build.
+  Over the first MiB of each Silesia file, decoding runs at 0.99x to
+  1.03x the speed of the former default build and 1.8x to 3.2x that of the
+  former paranoid build. Light outputs under 64 KiB decode in groups too.
 - The decoder now also rejects streams whose tokens overlap their literal
   runs.
 - Split the encoder into modules, with fixed-size reads and 32-byte SIMD
-  match compares at every level. Output is unchanged; encoding is 1% to
-  17% faster than the former paranoid build.
+  match compares at every level. Output is unchanged; encoding runs at
+  0.89x to 0.99x the speed of the former default build and up to 1.21x
+  that of the former paranoid build.
 - Dropped the Kani harnesses and the paranoid benchmark and chart rows.
 
 ## [0.1.7] - 2026-07-30
