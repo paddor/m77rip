@@ -4,19 +4,18 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
-- Removed all `unsafe` code. Every crate is `#![forbid(unsafe_code)]`; the
-  safe primitives formerly behind `paranoid` are the only implementation.
-- `paranoid` stays as a no-op feature.
-- Dropped the Kani harnesses and the paranoid benchmark and chart rows.
+- Removed all `unsafe` code. Every crate is `#![forbid(unsafe_code)]`.
+  `paranoid` stays as a no-op feature.
 - Rewrote the decoder around groups of four tokens that copy through
   fixed-size windows, so the safe hot loops need almost no bounds checks.
-  Light decoding is 1.6x to 1.9x and heavy decoding 2.8x faster than the
-  former paranoid build.
-- Split the encoder into modules: one greedy loop for levels `-1` to `2`
-  with per-level matchers and policies, and one suffix-array match finder
-  for levels `3` and `4`. Output is unchanged. Reads borrow fixed-size
-  arrays, levels `3` and `4` compare 32 bytes at a time with SIMD, and the
-  level `4` parse relaxes through fixed windows: 2% to 15% faster.
+  Over the first MiB of each Silesia file, light decoding is 1.6x to 1.9x
+  and heavy decoding 2.7x the speed of the former paranoid build.
+- The decoder now also rejects streams whose tokens overlap their literal
+  runs.
+- Split the encoder into modules, with fixed-size reads and 32-byte SIMD
+  match compares at every level. Output is unchanged; encoding is 1% to
+  17% faster than the former paranoid build.
+- Dropped the Kani harnesses and the paranoid benchmark and chart rows.
 
 ## [0.1.7] - 2026-07-30
 
