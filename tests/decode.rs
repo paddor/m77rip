@@ -458,7 +458,7 @@ fn decompress_light_rejects_distance_past_output_in_prefix() {
 /// Heavy tokens whose first match starts inside its own literals, with
 /// literal runs up to an extension and every match length. Runs of 18
 /// group tokens fill whole groups.
-fn heavy_mixed_stream(bad_token_at: Option<usize>) -> (Vec<u8>, Vec<u8>) {
+fn heavy_mixed_stream(len: usize, bad_token_at: Option<usize>) -> (Vec<u8>, Vec<u8>) {
     const LITS: [usize; 21] = [
         40, 0, 5, 33, 62, 1, 2, 3, 10, 20, 30, 0, 0, 7, 8, 9, 11, 12, 63, 64, 300,
     ];
@@ -487,7 +487,7 @@ fn heavy_mixed_stream(bad_token_at: Option<usize>) -> (Vec<u8>, Vec<u8>) {
     let mut stream = StreamBuilder::new(true);
     stream.token(40, 4, 33);
     let mut i = 0;
-    while stream.out() < 300_000 {
+    while stream.out() < len {
         let lit_len = LITS[i % LITS.len()];
         let match_len = HEAVY_LEN_OF[1 + i % (HEAVY_LEN_OF.len() - 1)] as usize;
         let mut dis = DISTANCES[i % DISTANCES.len()].min(stream.out() + lit_len);
@@ -503,7 +503,7 @@ fn heavy_mixed_stream(bad_token_at: Option<usize>) -> (Vec<u8>, Vec<u8>) {
 #[test]
 fn decompress_heavy_mixed_tokens() {
     for flags in [FLAG_HEAVY, FLAG_HEAVY | FLAG_HEAVY_COND] {
-        let (mut stream, expected) = heavy_mixed_stream(None);
+        let (mut stream, expected) = heavy_mixed_stream(300_000, None);
         stream[7] = flags;
         assert_eq!(decompress(&stream, expected.len()).unwrap(), expected);
     }
@@ -512,7 +512,7 @@ fn decompress_heavy_mixed_tokens() {
 #[test]
 fn decompress_heavy_rejects_distance_past_output_in_group() {
     for flags in [FLAG_HEAVY, FLAG_HEAVY | FLAG_HEAVY_COND] {
-        let (mut stream, expected) = heavy_mixed_stream(Some(100));
+        let (mut stream, expected) = heavy_mixed_stream(300_000, Some(100));
         stream[7] = flags;
         assert_eq!(
             decompress(&stream, expected.len()),
@@ -523,7 +523,7 @@ fn decompress_heavy_rejects_distance_past_output_in_group() {
 
 #[test]
 fn decompress_heavy_rejects_zero_match_code_in_group() {
-    let (mut stream, expected) = heavy_mixed_stream(None);
+    let (mut stream, expected) = heavy_mixed_stream(300_000, None);
     // Clear the match code of a token deep in the token stream. The tokens
     // before it have no extensions.
     let token = EXT_HEADER_SIZE + 4 * 5;
@@ -535,4 +535,29 @@ fn decompress_heavy_rejects_zero_match_code_in_group() {
         decompress(&stream, expected.len()),
         Err(Error::CorruptInput)
     );
+}
+
+/// Long enough for the window over the first MiB, the gap after it, and
+/// the window that slides behind the maximum distance.
+const PAST_MAX_DISTANCE: usize = HEAVY_MAX_DISTANCE + 100_000;
+
+#[test]
+fn decompress_heavy_mixed_tokens_past_max_distance() {
+    for flags in [FLAG_HEAVY, FLAG_HEAVY | FLAG_HEAVY_COND] {
+        let (mut stream, expected) = heavy_mixed_stream(PAST_MAX_DISTANCE, None);
+        stream[7] = flags;
+        assert_eq!(decompress(&stream, expected.len()).unwrap(), expected);
+    }
+}
+
+#[test]
+fn decompress_heavy_rejects_distance_past_output_in_start_window() {
+    for flags in [FLAG_HEAVY, FLAG_HEAVY | FLAG_HEAVY_COND] {
+        let (mut stream, expected) = heavy_mixed_stream(PAST_MAX_DISTANCE, Some(100));
+        stream[7] = flags;
+        assert_eq!(
+            decompress(&stream, expected.len()),
+            Err(Error::CorruptInput)
+        );
+    }
 }

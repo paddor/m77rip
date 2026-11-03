@@ -22,11 +22,14 @@ the exact length; the raw suffix gives them room.
 The decoder is safe Rust. It decodes tokens in groups of 16. A group
 borrows fixed-size arrays of its control bytes, its literal bytes, and its
 output, so offsets bounded by the token field widths need no bounds checks.
-Light groups past the first 64 KiB borrow the whole match history in one
-array; earlier groups check each distance. Heavy distances reach 1 MiB, so
-each heavy token borrows its own window from the match source. Tokens a
-group cannot take, such as long literal runs, and tokens near the stream
-end go through a fully checked step, as do light outputs under 64 KiB.
+Groups past the maximum distance (64 KiB light, 1 MiB heavy) borrow the
+whole match history in one array; earlier light groups check each
+distance. Heavy outputs of at least 1 MiB decode their first MiB in one
+array too; elsewhere each heavy token borrows its own window from the
+match source. Heavy output before and after the maximum distance decodes
+in separately dispatched functions. Tokens a group cannot take, such as
+long literal runs, and tokens near the stream end go through a fully
+checked step, as do light outputs under 64 KiB.
 
 Encode and decode live in separate crates to keep hot-loop code generation
 independent.

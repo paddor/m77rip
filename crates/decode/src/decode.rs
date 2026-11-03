@@ -157,12 +157,7 @@ pub fn decompress_into(src: &[u8], dst: &mut [u8]) -> Result<usize, Error> {
         (false, _) => {
             fearless_simd::dispatch!(level, simd => light::decode(simd, src, dst, layout))
         }
-        (true, true) => fearless_simd::dispatch!(
-            level, simd => heavy::decode::<_, true>(simd, src, dst, layout)
-        ),
-        (true, false) => fearless_simd::dispatch!(
-            level, simd => heavy::decode::<_, false>(simd, src, dst, layout)
-        ),
+        (true, cond) => heavy::decode(level, src, dst, layout, cond),
     }?;
     layout.finish(src, dst, cursor)?;
     Ok(original_size)
