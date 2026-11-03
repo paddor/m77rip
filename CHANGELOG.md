@@ -8,6 +8,10 @@ All notable changes to this project will be documented in this file.
   safe primitives formerly behind `paranoid` are the only implementation.
 - `paranoid` stays as a no-op feature.
 - Dropped the Kani harnesses and the paranoid benchmark and chart rows.
+- Rewrote the decoder around groups of four tokens that copy through
+  fixed-size windows, so the safe hot loops need almost no bounds checks.
+  Light decoding is 1.6x to 1.9x and heavy decoding 2.8x faster than the
+  former paranoid build.
 
 ## [0.1.7] - 2026-07-30
 

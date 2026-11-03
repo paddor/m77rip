@@ -5,7 +5,9 @@
 extern crate alloc;
 
 mod decode;
-pub(crate) mod primitives;
+mod heavy;
+mod light;
+mod primitives;
 
 #[cfg(feature = "alloc")]
 pub use decode::decompress;

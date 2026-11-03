@@ -10,11 +10,18 @@ matching bytes, then emits a token: literal length, match length, and 16-bit
 distance. Literals are appended from the right side of the output buffer.
 
 The decoder walks the token stream from byte 16 and the literal stream from
-the suffix boundary. Each token copies literals to the current output cursor,
-then copies a non-overlapping match from earlier output. Guarded prefix
-and tail phases check every token. The middle phase, where no match can
-reach before the output start, uses fixed 16-byte literal and 32-byte match
-copies.
+the suffix boundary. Each token copies literals to the output cursor, then
+copies a match from earlier output in 32-byte chunks. Chunks may run past
+the exact length; the raw suffix gives them room.
+
+The decoder is safe Rust. It decodes tokens in groups of four. A group
+borrows fixed-size arrays of its control bytes, its literal bytes, and its
+output, so offsets bounded by the token field widths need no bounds checks.
+Light groups past the first 64 KiB borrow the whole match history in one
+array; earlier groups check each distance. Heavy distances reach 1 MiB, so
+each heavy token borrows its own window from the match source. Tokens a
+group cannot take, such as long literal runs, and tokens near the stream
+end go through a fully checked step, as do light outputs under 64 KiB.
 
 Encode and decode live in separate crates to keep hot-loop code generation
 independent.

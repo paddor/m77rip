@@ -1,48 +1,107 @@
 #[cfg(feature = "alloc")]
 use alloc::vec;
 
-use crate::primitives;
+use crate::{heavy, light};
 use m77rip_core::Error;
-use m77rip_core::format::*;
+use m77rip_core::format::{
+    EXT_HEADER_SIZE, FLAG_HEAVY, FLAG_HEAVY_COND, FLAG_SHIFT, HEADER_SIZE, HEAVY_LITERAL_SUFFIX,
+    HEAVY_SMALL_LIM, LITERAL_SUFFIX, SIZE_MASK, SMALL_LIM,
+};
 
-#[cold]
-#[inline(never)]
-fn corrupt_input() -> Result<usize, Error> {
-    Err(Error::CorruptInput)
+/// Stream regions shared by the light and heavy decoders.
+///
+/// Tokens run forward from `EXT_HEADER_SIZE`, literal runs backward from
+/// `suffix_start`, and the raw suffix fills the output after
+/// `token_output_end`.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Layout {
+    pub(crate) suffix_start: usize,
+    pub(crate) token_output_end: usize,
 }
 
-const _: () = assert!(HEAVY_MIN_DISTANCE > VECTOR_WIDTH);
-const _: () = assert!(HEAVY_LITERAL_SUFFIX >= 2 * VECTOR_WIDTH);
+/// Decoder positions: next token byte, end of the unread literal runs, and
+/// output cursor.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Cursor {
+    pub(crate) control: usize,
+    pub(crate) literals: usize,
+    pub(crate) out: usize,
+}
 
-#[inline]
+impl Layout {
+    /// Validate the extended header. `dst` is the output, cut to the
+    /// decompressed size.
+    fn parse(src: &[u8], dst: &[u8], min_suffix: usize) -> Result<Self, Error> {
+        let header: [u8; 8] = src
+            .get(HEADER_SIZE..EXT_HEADER_SIZE)
+            .ok_or(Error::InputTooShort)?
+            .try_into()
+            .unwrap();
+        let suffix_u64 = u64::from_le_bytes(header);
+        let suffix: usize = suffix_u64
+            .try_into()
+            .map_err(|_| Error::SizeOverflow { size: suffix_u64 })?;
+        if suffix < min_suffix || suffix > dst.len() {
+            return Err(Error::CorruptInput);
+        }
+        let suffix_start = src
+            .len()
+            .checked_sub(suffix)
+            .filter(|&start| start >= EXT_HEADER_SIZE)
+            .ok_or(Error::InputTooShort)?;
+        Ok(Self {
+            suffix_start,
+            token_output_end: dst.len() - suffix,
+        })
+    }
+
+    pub(crate) fn start(self) -> Cursor {
+        Cursor {
+            control: EXT_HEADER_SIZE,
+            literals: self.suffix_start,
+            out: 0,
+        }
+    }
+
+    /// Check that the tokens filled the output up to the suffix, then copy
+    /// the suffix.
+    fn finish(self, src: &[u8], dst: &mut [u8], cursor: Cursor) -> Result<(), Error> {
+        if cursor.out != self.token_output_end || cursor.control != cursor.literals {
+            return Err(Error::CorruptInput);
+        }
+        dst[self.token_output_end..].copy_from_slice(&src[self.suffix_start..]);
+        Ok(())
+    }
+}
+
 fn header_fields(src: &[u8]) -> Result<(usize, u8), Error> {
     let header = src
-        .get(..HEADER_SIZE)
-        .ok_or(Error::InputTooShort)
-        .map(|header| u64::from_le_bytes(header.try_into().unwrap()))?;
-    let original_size_u64 = header & SIZE_MASK;
-    let original_size = original_size_u64
-        .try_into()
-        .map_err(|_| Error::SizeOverflow {
-            size: original_size_u64,
-        })?;
-    Ok((original_size, (header >> FLAG_SHIFT) as u8))
+        .first_chunk::<HEADER_SIZE>()
+        .map(|header| u64::from_le_bytes(*header))
+        .ok_or(Error::InputTooShort)?;
+    let size = header & SIZE_MASK;
+    let size = size.try_into().map_err(|_| Error::SizeOverflow { size })?;
+    Ok((size, (header >> FLAG_SHIFT) as u8))
 }
 
 /// Reads the decompressed size from the first 8 bytes of a compressed stream.
 ///
 /// Returns `None` if `src` is shorter than 8 bytes.
+#[must_use]
 pub fn decompressed_size(src: &[u8]) -> Option<u64> {
-    if src.len() < HEADER_SIZE {
-        return None;
-    }
-    Some(u64::from_le_bytes(src[..8].try_into().unwrap()) & SIZE_MASK)
+    src.first_chunk::<HEADER_SIZE>()
+        .map(|header| u64::from_le_bytes(*header) & SIZE_MASK)
 }
 
 /// Decompresses a misa77-compressed stream into a new `Vec<u8>`.
 ///
 /// `expected_len` is the expected decompressed size. It must match the size
 /// encoded in the stream header.
+///
+/// # Errors
+///
+/// Returns [`Error::SizeMismatch`] if the header disagrees with
+/// `expected_len`, and the errors of [`decompress_into`].
 #[cfg(feature = "alloc")]
 pub fn decompress(src: &[u8], expected_len: usize) -> Result<alloc::vec::Vec<u8>, Error> {
     let (actual_len, _) = header_fields(src)?;
@@ -61,502 +120,53 @@ pub fn decompress(src: &[u8], expected_len: usize) -> Result<alloc::vec::Vec<u8>
 /// Decompresses a misa77-compressed stream into the provided buffer.
 ///
 /// Returns the number of bytes written to `dst`.
+///
+/// # Errors
+///
+/// Returns [`Error::OutputTooSmall`] if `dst` cannot hold the decompressed
+/// size, [`Error::InputTooShort`] for a truncated stream, and
+/// [`Error::CorruptInput`] for a malformed one.
 pub fn decompress_into(src: &[u8], dst: &mut [u8]) -> Result<usize, Error> {
     let (original_size, flags) = header_fields(src)?;
+    let have = dst.len();
+    let dst = dst.get_mut(..original_size).ok_or(Error::OutputTooSmall {
+        need: original_size,
+        have,
+    })?;
 
-    if original_size == 0 {
-        return Ok(0);
-    }
-
-    if dst.len() < original_size {
-        return Err(Error::OutputTooSmall {
-            need: original_size,
-            have: dst.len(),
-        });
-    }
-
-    if flags & FLAG_HEAVY != 0 {
-        return decompress_into_heavy(src, dst, original_size);
-    }
-
-    if original_size <= SMALL_LIM {
+    let heavy = flags & FLAG_HEAVY != 0;
+    let (raw_limit, min_suffix) = if heavy {
+        (HEAVY_SMALL_LIM, HEAVY_LITERAL_SUFFIX)
+    } else {
+        (SMALL_LIM, LITERAL_SUFFIX)
+    };
+    if original_size <= raw_limit {
         let payload = src
             .get(HEADER_SIZE..HEADER_SIZE + original_size)
             .ok_or(Error::InputTooShort)?;
-        dst[..original_size].copy_from_slice(payload);
+        dst.copy_from_slice(payload);
         return Ok(original_size);
     }
 
-    if src.len() < EXT_HEADER_SIZE {
-        return Err(Error::InputTooShort);
-    }
-
-    let suffix_cnt_u64 = u64::from_le_bytes(src[8..16].try_into().unwrap());
-    let literal_suffix_cnt: usize = suffix_cnt_u64.try_into().map_err(|_| Error::SizeOverflow {
-        size: suffix_cnt_u64,
-    })?;
-
-    if literal_suffix_cnt < LITERAL_SUFFIX || literal_suffix_cnt > original_size {
-        return Err(Error::CorruptInput);
-    }
-
-    let suffix_end = EXT_HEADER_SIZE
-        .checked_add(literal_suffix_cnt)
-        .ok_or(Error::CorruptInput)?;
-    if src.len() < suffix_end {
-        return Err(Error::InputTooShort);
-    }
-
-    let suffix_start_in_src = src.len() - literal_suffix_cnt;
-    let token_output_end = original_size - literal_suffix_cnt;
-
-    decompress_loop_impl(
-        src,
-        dst,
-        original_size,
-        literal_suffix_cnt,
-        suffix_start_in_src,
-        token_output_end,
-    )
-}
-
-fn decompress_into_heavy(src: &[u8], dst: &mut [u8], original_size: usize) -> Result<usize, Error> {
-    if original_size <= HEAVY_SMALL_LIM {
-        let raw_end = HEADER_SIZE
-            .checked_add(original_size)
-            .ok_or(Error::CorruptInput)?;
-        let payload = src.get(HEADER_SIZE..raw_end).ok_or(Error::InputTooShort)?;
-        dst[..original_size].copy_from_slice(payload);
-        return Ok(original_size);
-    }
-
-    if src.len() < EXT_HEADER_SIZE {
-        return Err(Error::InputTooShort);
-    }
-
-    let suffix_cnt_u64 = u64::from_le_bytes(src[8..16].try_into().unwrap());
-    let literal_suffix_cnt: usize = suffix_cnt_u64.try_into().map_err(|_| Error::SizeOverflow {
-        size: suffix_cnt_u64,
-    })?;
-
-    if literal_suffix_cnt < HEAVY_LITERAL_SUFFIX || literal_suffix_cnt > original_size {
-        return corrupt_input();
-    }
-    let Some(non_suffix_len) = src.len().checked_sub(literal_suffix_cnt) else {
-        return corrupt_input();
-    };
-    if non_suffix_len < EXT_HEADER_SIZE {
-        return corrupt_input();
-    }
-
-    let token_output_end = original_size - literal_suffix_cnt;
-    decompress_heavy_loop(
-        src,
-        dst,
-        original_size,
-        literal_suffix_cnt,
-        non_suffix_len,
-        token_output_end,
-    )
-}
-
-fn decompress_heavy_loop(
-    src: &[u8],
-    dst: &mut [u8],
-    original_size: usize,
-    literal_suffix_cnt: usize,
-    suffix_start_in_src: usize,
-    token_output_end: usize,
-) -> Result<usize, Error> {
-    let mut control = EXT_HEADER_SIZE;
-    let mut literals = suffix_start_in_src;
-    let mut out = 0usize;
-
-    while control < literals {
-        if control.checked_add(4).is_none_or(|end| end > literals) {
-            return corrupt_input();
+    let layout = Layout::parse(src, dst, min_suffix)?;
+    #[cfg(feature = "std")]
+    let level = fearless_simd::Level::new();
+    #[cfg(not(feature = "std"))]
+    let level = fearless_simd::Level::baseline();
+    let cursor = match (heavy, flags & FLAG_HEAVY_COND != 0) {
+        (false, _) => {
+            fearless_simd::dispatch!(level, simd => light::decode(simd, src, dst, layout))
         }
-        let token = primitives::read_u32_le(src, control);
-        control += 4;
-
-        let mut lit_len = (token >> 26) as usize;
-        let match_code = ((token >> 20) & 0x3F) as usize;
-        if match_code == 0 {
-            return corrupt_input();
-        }
-        let match_len = HEAVY_LEN_OF[match_code] as usize;
-        let dis = (token & HEAVY_DIS_MASK) as usize + HEAVY_MIN_DISTANCE;
-
-        if lit_len == HEAVY_TOKEN_LIT_MAX {
-            loop {
-                if control >= literals {
-                    return corrupt_input();
-                }
-                let extra = primitives::read_byte(src, control) as usize;
-                control += 1;
-                lit_len = lit_len.checked_add(extra).ok_or(Error::CorruptInput)?;
-                if extra < 255 {
-                    break;
-                }
-            }
-        }
-
-        if lit_len > literals - control {
-            return corrupt_input();
-        }
-        literals -= lit_len;
-
-        let after_literals = out.checked_add(lit_len).ok_or(Error::CorruptInput)?;
-        let token_end = after_literals
-            .checked_add(match_len)
-            .ok_or(Error::CorruptInput)?;
-        if token_end > token_output_end {
-            return corrupt_input();
-        }
-
-        primitives::copy_from_src(src, literals, dst, out, lit_len);
-        out = after_literals;
-
-        if dis > out {
-            return corrupt_input();
-        }
-        copy_heavy_match(dst, out - dis, out, match_len)?;
-        out = token_end;
-    }
-
-    if out != token_output_end {
-        return corrupt_input();
-    }
-    primitives::copy_from_src(src, suffix_start_in_src, dst, out, literal_suffix_cnt);
-    Ok(original_size)
-}
-
-#[inline(always)]
-fn copy_heavy_match(
-    dst: &mut [u8],
-    match_src: usize,
-    out: usize,
-    match_len: usize,
-) -> Result<(), Error> {
-    let rounded = match_len
-        .checked_add(VECTOR_WIDTH - 1)
-        .map(|n| n & !(VECTOR_WIDTH - 1))
-        .ok_or(Error::CorruptInput)?;
-    let end = out.checked_add(rounded).ok_or(Error::CorruptInput)?;
-    if end > dst.len() {
-        return Err(Error::CorruptInput);
-    }
-
-    let mut copied = 0usize;
-    while copied < match_len {
-        primitives::wild_copy_match_32(dst, match_src + copied, out + copied, VECTOR_WIDTH);
-        copied += VECTOR_WIDTH;
-    }
-    Ok(())
-}
-
-#[inline(always)]
-fn decompress_loop_impl(
-    src: &[u8],
-    dst: &mut [u8],
-    original_size: usize,
-    literal_suffix_cnt: usize,
-    suffix_start_in_src: usize,
-    token_output_end: usize,
-) -> Result<usize, Error> {
-    let mut control = EXT_HEADER_SIZE;
-    let mut literals = suffix_start_in_src;
-    let mut out = 0usize;
-
-    // Maximum representable displacement.
-    const DIS_CEIL: usize = DIS_LIM + MIN_DISTANCE;
-    // Slack before token_output_end where the fast loop must stop. Non-extension
-    // tokens produce at most 6 literals + 34 match bytes = 40. Keep enough room
-    // so that non-extension tokens cannot overrun.
-    const RED_SLACK: usize = 8;
-
-    let prefix_end = DIS_CEIL.min(token_output_end);
-    let red = token_output_end.saturating_sub(RED_SLACK);
-
-    // --- Phase 1: guarded prefix (match distance can underflow dst[0]) ---
-    while control.checked_add(3).is_some_and(|end| end <= literals) && out < prefix_end {
-        let token = primitives::read_byte(src, control);
-        let mut lit_len = (token >> TOKEN_MATCH_BITS) as usize;
-        let match_len = (token & TOKEN_MATCH_MASK) as usize + MIN_MATCH_LEN - 1;
-        let dis = primitives::read_u16_le(src, control + 1) as usize + MIN_DISTANCE;
-        control += 3;
-
-        if lit_len == TOKEN_LIT_MAX {
-            loop {
-                if control >= literals {
-                    return corrupt_input();
-                }
-                let extra = primitives::read_byte(src, control) as usize;
-                control = control.checked_add(1).ok_or(Error::CorruptInput)?;
-                lit_len = lit_len.checked_add(extra).ok_or(Error::CorruptInput)?;
-                if extra < 255 {
-                    break;
-                }
-            }
-        }
-
-        if lit_len > literals {
-            return corrupt_input();
-        }
-        literals -= lit_len;
-        let after_literals = out.checked_add(lit_len).ok_or(Error::CorruptInput)?;
-        let token_end = after_literals
-            .checked_add(match_len)
-            .ok_or(Error::CorruptInput)?;
-        if token_end > token_output_end {
-            return corrupt_input();
-        }
-
-        primitives::wild_copy_literals_16(src, literals, dst, out, lit_len);
-        if lit_len > 16 {
-            primitives::wild_copy_literals_16(src, literals + 16, dst, out + 16, lit_len - 16);
-            if lit_len > 32 {
-                primitives::copy_from_src(src, literals + 32, dst, out + 32, lit_len - 32);
-            }
-        }
-        out = after_literals;
-
-        if dis > out {
-            return corrupt_input();
-        }
-        let match_src = out - dis;
-        primitives::wild_copy_match_32(dst, match_src, out, match_len);
-        out = token_end;
-    }
-
-    // --- Phase 2: fast main loop (dis can never underflow, non-extension
-    // tokens can never overrun due to slack) ---
-    while control.checked_add(3).is_some_and(|end| end <= literals) && out < red {
-        let token = primitives::read_byte(src, control);
-        let mut lit_len = (token >> TOKEN_MATCH_BITS) as usize;
-        let match_len = (token & TOKEN_MATCH_MASK) as usize + MIN_MATCH_LEN - 1;
-        let dis = primitives::read_u16_le(src, control + 1) as usize + MIN_DISTANCE;
-        control += 3;
-
-        if lit_len == TOKEN_LIT_MAX {
-            loop {
-                if control >= literals {
-                    return corrupt_input();
-                }
-                let extra = primitives::read_byte(src, control) as usize;
-                control = control.checked_add(1).ok_or(Error::CorruptInput)?;
-                lit_len = lit_len.checked_add(extra).ok_or(Error::CorruptInput)?;
-                if extra < 255 {
-                    break;
-                }
-            }
-        }
-
-        if lit_len > literals {
-            return corrupt_input();
-        }
-        let after_literals = out.checked_add(lit_len).ok_or(Error::CorruptInput)?;
-        let token_end = after_literals
-            .checked_add(match_len)
-            .ok_or(Error::CorruptInput)?;
-        if token_end > token_output_end {
-            return corrupt_input();
-        }
-
-        literals -= lit_len;
-
-        {
-            let literal_src = &src[literals..];
-            let output = &mut dst[out..];
-            primitives::wild_copy_literals_16_slices(literal_src, output);
-            if lit_len > 16 {
-                primitives::wild_copy_literals_16_slices(&literal_src[16..], &mut output[16..]);
-                if lit_len > 32 {
-                    output[32..lit_len].copy_from_slice(&literal_src[32..lit_len]);
-                }
-            }
-        }
-        out = after_literals;
-
-        let match_src = out - dis;
-        {
-            let (prefix, output) = dst.split_at_mut(out);
-            primitives::wild_copy_match_32_slices(&prefix[match_src..], output);
-        }
-        out = token_end;
-    }
-
-    // --- Phase 3: guarded tail ---
-    while control.checked_add(3).is_some_and(|end| end <= literals) {
-        let token = primitives::read_byte(src, control);
-        let mut lit_len = (token >> TOKEN_MATCH_BITS) as usize;
-        let match_len = (token & TOKEN_MATCH_MASK) as usize + MIN_MATCH_LEN - 1;
-        let dis = primitives::read_u16_le(src, control + 1) as usize + MIN_DISTANCE;
-        control += 3;
-
-        if lit_len == TOKEN_LIT_MAX {
-            loop {
-                if control >= literals {
-                    return corrupt_input();
-                }
-                let extra = primitives::read_byte(src, control) as usize;
-                control = control.checked_add(1).ok_or(Error::CorruptInput)?;
-                lit_len = lit_len.checked_add(extra).ok_or(Error::CorruptInput)?;
-                if extra < 255 {
-                    break;
-                }
-            }
-        }
-
-        if lit_len > literals {
-            return corrupt_input();
-        }
-        literals -= lit_len;
-        let after_literals = out.checked_add(lit_len).ok_or(Error::CorruptInput)?;
-        let token_end = after_literals
-            .checked_add(match_len)
-            .ok_or(Error::CorruptInput)?;
-        if token_end > token_output_end {
-            return corrupt_input();
-        }
-
-        primitives::wild_copy_literals_16(src, literals, dst, out, lit_len);
-        if lit_len > 16 {
-            primitives::wild_copy_literals_16(src, literals + 16, dst, out + 16, lit_len - 16);
-            if lit_len > 32 {
-                primitives::copy_from_src(src, literals + 32, dst, out + 32, lit_len - 32);
-            }
-        }
-        out = after_literals;
-
-        if dis > out {
-            return corrupt_input();
-        }
-        let match_src = out - dis;
-        primitives::wild_copy_match_32(dst, match_src, out, match_len);
-        out = token_end;
-    }
-
-    if literal_suffix_cnt > 0 {
-        if out
-            .checked_add(literal_suffix_cnt)
-            .is_none_or(|end| end != original_size)
-        {
-            return corrupt_input();
-        }
-        primitives::copy_from_src(src, suffix_start_in_src, dst, out, literal_suffix_cnt);
-        out = original_size;
-    }
-
-    if out != original_size {
-        return corrupt_input();
-    }
-
+        (true, true) => fearless_simd::dispatch!(
+            level, simd => heavy::decode::<_, true>(simd, src, dst, layout)
+        ),
+        (true, false) => fearless_simd::dispatch!(
+            level, simd => heavy::decode::<_, false>(simd, src, dst, layout)
+        ),
+    }?;
+    layout.finish(src, dst, cursor)?;
     Ok(original_size)
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[cfg(feature = "alloc")]
-    use alloc::vec::Vec;
-
-    #[test]
-    fn empty_input() {
-        let mut header = 0u64.to_le_bytes().to_vec();
-        let result = decompress(&header, 0).unwrap();
-        assert!(result.is_empty());
-
-        header.truncate(4);
-        assert!(decompress(&header, 0).is_err());
-    }
-
-    #[test]
-    fn small_raw() {
-        let data = b"hello world";
-        let mut compressed = (data.len() as u64).to_le_bytes().to_vec();
-        compressed.extend_from_slice(data);
-        let result = decompress(&compressed, data.len()).unwrap();
-        assert_eq!(&result, data);
-    }
-
-    #[test]
-    fn small_raw_max() {
-        let data = vec![0xAB; SMALL_LIM];
-        let mut compressed = (data.len() as u64).to_le_bytes().to_vec();
-        compressed.extend_from_slice(&data);
-        let result = decompress(&compressed, data.len()).unwrap();
-        assert_eq!(result, data);
-    }
-
-    #[test]
-    fn all_suffix_no_matches() {
-        let data = vec![0x42; 100];
-        let mut compressed = Vec::new();
-        compressed.extend_from_slice(&(data.len() as u64).to_le_bytes());
-        compressed.extend_from_slice(&(data.len() as u64).to_le_bytes());
-        compressed.extend_from_slice(&data);
-        let result = decompress(&compressed, data.len()).unwrap();
-        assert_eq!(result, data);
-    }
-
-    #[test]
-    fn single_sequence() {
-        let original_size: usize = 69;
-        let suffix_cnt: usize = 32;
-
-        let mut original = vec![0u8; original_size];
-        for (i, byte) in original.iter_mut().enumerate().take(33) {
-            *byte = (i as u8).wrapping_add(0x10);
-        }
-        original[33] = original[0];
-        original[34] = original[1];
-        original[35] = original[2];
-        original[36] = original[3];
-
-        let m_prime: u8 = (4 - (MIN_MATCH_LEN - 1)) as u8;
-        let l_field: u8 = TOKEN_LIT_MAX as u8;
-        let token = (l_field << TOKEN_MATCH_BITS) | m_prime;
-        let dis_small: u16 = 0;
-
-        let mut compressed = Vec::new();
-        compressed.extend_from_slice(&(original_size as u64).to_le_bytes());
-        compressed.extend_from_slice(&(suffix_cnt as u64).to_le_bytes());
-        compressed.push(token);
-        compressed.extend_from_slice(&dis_small.to_le_bytes());
-        compressed.push(26);
-        compressed.extend_from_slice(&original[..33]);
-        compressed.extend_from_slice(&original[37..69]);
-
-        let result = decompress(&compressed, original_size).unwrap();
-        assert_eq!(result, original);
-    }
-
-    #[test]
-    fn output_too_small() {
-        let data = b"hello";
-        let mut compressed = (data.len() as u64).to_le_bytes().to_vec();
-        compressed.extend_from_slice(data);
-        let err = decompress_into(&compressed, &mut [0u8; 3]).unwrap_err();
-        assert!(matches!(err, Error::OutputTooSmall { .. }));
-    }
-
-    #[test]
-    fn truncated_header() {
-        assert!(decompress(&[1, 0, 0], 1).is_err());
-    }
-
-    #[cfg(feature = "alloc")]
-    #[test]
-    fn expected_size_mismatch_is_rejected() {
-        let compressed = 3u64.to_le_bytes();
-        assert_eq!(
-            decompress(&compressed, 4),
-            Err(Error::SizeMismatch {
-                expected: 4,
-                actual: 3,
-            })
-        );
-    }
-}
+mod tests;
