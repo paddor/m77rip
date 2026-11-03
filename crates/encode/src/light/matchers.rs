@@ -14,7 +14,7 @@ const BATCH: usize = 8;
 /// Bytes a batch reads: one 8-byte hash input per position.
 const BATCH_READ: usize = BATCH + 7;
 
-const _: () = assert!(BATCH % 2 == 0);
+const _: () = assert!(BATCH.is_multiple_of(2));
 
 /// A greedy match finder.
 pub(crate) trait Matcher {
