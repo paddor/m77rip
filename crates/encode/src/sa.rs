@@ -144,20 +144,27 @@ impl SaWorkspace {
     /// `limit` bytes. Returns (length, distance).
     #[inline(always)]
     fn neighbors<S: Simd>(&self, simd: S, src: &[u8], pos: usize, limit: usize) -> (usize, u32) {
-        let seg_start = self.seg_start;
-        let rank = self.rank[pos - seg_start] as usize;
-        let mut best = (0, 0);
-        for neighbor in [self.live.prev(rank), self.live.next(rank)]
-            .into_iter()
-            .flatten()
-        {
-            let candidate = seg_start + self.sa[neighbor] as u32 as usize;
+        let rank = self.rank[pos - self.seg_start] as usize;
+        // The candidate of the previous neighbor wins ties.
+        let mut best = (0, pos);
+        if let Some(neighbor) = self.live.prev(rank) {
+            let candidate = self.position(neighbor);
+            best = (lcp(simd, src, pos, candidate, limit), candidate);
+        }
+        if let Some(neighbor) = self.live.next(rank) {
+            let candidate = self.position(neighbor);
             let len = lcp(simd, src, pos, candidate, limit);
             if len > best.0 {
-                best = (len, (pos - candidate) as u32);
+                best = (len, candidate);
             }
         }
-        best
+        (best.0, (pos - best.1) as u32)
+    }
+
+    /// Input position of the suffix of rank `rank`.
+    #[inline(always)]
+    fn position(&self, rank: usize) -> usize {
+        self.seg_start + self.sa[rank] as u32 as usize
     }
 }
 
