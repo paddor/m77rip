@@ -1,3 +1,5 @@
+#![forbid(unsafe_code)]
+
 pub use m77rip_core::{Error, format};
 #[cfg(feature = "alloc")]
 pub use m77rip_decode::decompress;

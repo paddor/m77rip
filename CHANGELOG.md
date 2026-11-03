@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+- Removed all `unsafe` code. Every crate is `#![forbid(unsafe_code)]`; the
+  safe primitives formerly behind `paranoid` are the only implementation.
+- `paranoid` stays as a no-op feature.
+- Dropped the Kani harnesses and the paranoid benchmark and chart rows.
+
 ## [0.1.7] - 2026-07-30
 
 - Updated compression levels to the misa77 v0.6.0 model: integer levels

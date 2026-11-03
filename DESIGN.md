@@ -11,10 +11,10 @@ distance. Literals are appended from the right side of the output buffer.
 
 The decoder walks the token stream from byte 16 and the literal stream from
 the suffix boundary. Each token copies literals to the current output cursor,
-then copies a non-overlapping match from earlier output. The default build
-uses guarded prefix/tail phases around a fast middle phase with unchecked
-16-byte literal and 32-byte match copies.
+then copies a non-overlapping match from earlier output. Guarded prefix
+and tail phases check every token. The middle phase, where no match can
+reach before the output start, uses fixed 16-byte literal and 32-byte match
+copies.
 
 Encode and decode live in separate crates to keep hot-loop code generation
-independent. `paranoid` swaps unchecked primitives for safe twins without
-changing the decoder interface.
+independent.

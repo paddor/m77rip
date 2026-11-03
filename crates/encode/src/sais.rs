@@ -1,14 +1,4 @@
-#[cfg(not(feature = "paranoid"))]
-const PREFETCH_DISTANCE: usize = 80;
-
-#[cfg(all(not(feature = "paranoid"), target_arch = "x86_64"))]
-use core::arch::x86_64::{_MM_HINT_T0, _mm_prefetch};
-
 use libsais::{SuffixArrayConstruction, context::Context, typestate::SingleThreaded};
-
-#[cfg(all(not(feature = "paranoid"), not(target_arch = "x86_64")))]
-#[inline(always)]
-fn prefetch<T>(_slice: &[T], _index: usize) {}
 
 pub(crate) struct SaisWorkspace {
     ctx: Context<u8, i32, SingleThreaded>,
@@ -21,49 +11,6 @@ impl SaisWorkspace {
         }
     }
 
-    #[cfg(not(feature = "paranoid"))]
-    pub(crate) fn suffix_array_with_rank(
-        &mut self,
-        input: &[u8],
-        sa: &mut [i32],
-        rank: &mut [u32],
-    ) {
-        debug_assert_eq!(input.len(), sa.len());
-        debug_assert_eq!(input.len(), rank.len());
-        if input.is_empty() {
-            return;
-        }
-
-        SuffixArrayConstruction::for_text(input)
-            .in_borrowed_buffer(sa)
-            .single_threaded()
-            .with_context(&mut self.ctx)
-            .run()
-            .expect("libsais suffix-array construction failed");
-
-        let sa_ptr = sa.as_ptr();
-        let rank_ptr = rank.as_mut_ptr();
-        let len = sa.len();
-        for i in 0..len {
-            // SAFETY: `i` is in bounds and libsais wrote a valid suffix
-            // permutation into `sa`.
-            unsafe {
-                if i + PREFETCH_DISTANCE < len {
-                    let next = *sa_ptr.add(i + PREFETCH_DISTANCE);
-                    debug_assert!(next >= 0);
-                    #[cfg(target_arch = "x86_64")]
-                    _mm_prefetch(rank_ptr.add(next as u32 as usize).cast::<i8>(), _MM_HINT_T0);
-                    #[cfg(not(target_arch = "x86_64"))]
-                    prefetch(rank, next as u32 as usize);
-                }
-                let pos = *sa_ptr.add(i);
-                debug_assert!(pos >= 0);
-                *rank_ptr.add(pos as u32 as usize) = i as u32;
-            }
-        }
-    }
-
-    #[cfg(feature = "paranoid")]
     pub(crate) fn suffix_array_with_rank(
         &mut self,
         input: &[u8],

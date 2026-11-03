@@ -147,3 +147,6 @@ const fn heavy_code_floor_table() -> [u8; 256] {
     }
     table
 }
+
+#[cfg(test)]
+mod tests;

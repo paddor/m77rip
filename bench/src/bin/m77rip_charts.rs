@@ -50,11 +50,6 @@ const LEVELS: &[Level] = &[
                 compress: "m77rip compress level -1",
                 decode: "m77rip (from level -1)",
             },
-            ImplPair {
-                family: "m77rip paranoid",
-                compress: "m77rip paranoid compress level -1",
-                decode: "m77rip paranoid (from level -1)",
-            },
         ],
     },
     Level {
@@ -69,11 +64,6 @@ const LEVELS: &[Level] = &[
                 family: "m77rip",
                 compress: "m77rip compress level 0",
                 decode: "m77rip (from level 0)",
-            },
-            ImplPair {
-                family: "m77rip paranoid",
-                compress: "m77rip paranoid compress level 0",
-                decode: "m77rip paranoid (from level 0)",
             },
         ],
     },
@@ -90,11 +80,6 @@ const LEVELS: &[Level] = &[
                 compress: "m77rip compress level 1",
                 decode: "m77rip (from level 1)",
             },
-            ImplPair {
-                family: "m77rip paranoid",
-                compress: "m77rip paranoid compress level 1",
-                decode: "m77rip paranoid (from level 1)",
-            },
         ],
     },
     Level {
@@ -109,11 +94,6 @@ const LEVELS: &[Level] = &[
                 family: "m77rip",
                 compress: "m77rip compress level 2",
                 decode: "m77rip (from level 2)",
-            },
-            ImplPair {
-                family: "m77rip paranoid",
-                compress: "m77rip paranoid compress level 2",
-                decode: "m77rip paranoid (from level 2)",
             },
         ],
     },
@@ -130,11 +110,6 @@ const LEVELS: &[Level] = &[
                 compress: "m77rip compress level 3",
                 decode: "m77rip (from level 3)",
             },
-            ImplPair {
-                family: "m77rip paranoid",
-                compress: "m77rip paranoid compress level 3",
-                decode: "m77rip paranoid (from level 3)",
-            },
         ],
     },
     Level {
@@ -149,11 +124,6 @@ const LEVELS: &[Level] = &[
                 family: "m77rip",
                 compress: "m77rip compress level 4",
                 decode: "m77rip (from level 4)",
-            },
-            ImplPair {
-                family: "m77rip paranoid",
-                compress: "m77rip paranoid compress level 4",
-                decode: "m77rip paranoid (from level 4)",
             },
         ],
     },
@@ -260,7 +230,6 @@ impl Config {
             styles: vec![
                 codec("C++ misa77", MISA77_LABEL, 0x60a5fa, 0x4680c4),
                 codec("m77rip", "m77rip", 0xf87171, 0xc45050),
-                codec("m77rip paranoid", "m77rip paranoid", 0xf472b6, 0xc05a92),
             ],
         }
     }
@@ -516,7 +485,7 @@ fn draw_summary(cfg: &Config, out_dir: &Path) -> Result<(), Box<dyn Error>> {
     draw_legend(
         &area,
         cfg,
-        &["C++ misa77", "m77rip", "m77rip paranoid"],
+        &["C++ misa77", "m77rip"],
         width as f64 / 2.0,
         leg_y,
     )?;
@@ -550,7 +519,7 @@ fn require_rows(rows: &[BenchRow]) -> Result<(), Box<dyn Error>> {
     }
     let shown = missing.into_iter().take(24).collect::<Vec<_>>().join(", ");
     Err(format!(
-        "summary: missing required first-1MiB Silesia cache rows ({shown}). Run default and paranoid `m77rip_bench` with `--features c-reference` first."
+        "summary: missing required first-1MiB Silesia cache rows ({shown}). Run `m77rip_bench` with `--features c-reference` first."
     )
     .into())
 }
@@ -710,16 +679,9 @@ fn family_style(family: &str) -> Option<&'static CodecStyle> {
         color: RGBColor(0xf8, 0x71, 0x71),
         dim: RGBColor(0xc4, 0x50, 0x50),
     };
-    static PARANOID: CodecStyle = CodecStyle {
-        key: "m77rip paranoid",
-        label: "m77rip paranoid",
-        color: RGBColor(0xf4, 0x72, 0xb6),
-        dim: RGBColor(0xc0, 0x5a, 0x92),
-    };
     match family {
         "C++ misa77" => Some(&CPP),
         "m77rip" => Some(&M77),
-        "m77rip paranoid" => Some(&PARANOID),
         _ => None,
     }
 }
