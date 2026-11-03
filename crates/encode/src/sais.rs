@@ -4,13 +4,15 @@ pub(crate) struct SaisWorkspace {
     ctx: Context<u8, i32, SingleThreaded>,
 }
 
-impl SaisWorkspace {
-    pub(crate) fn new() -> Self {
+impl Default for SaisWorkspace {
+    fn default() -> Self {
         Self {
             ctx: Context::new_single_threaded(),
         }
     }
+}
 
+impl SaisWorkspace {
     pub(crate) fn suffix_array_with_rank(
         &mut self,
         input: &[u8],
@@ -42,7 +44,7 @@ mod tests {
     use super::*;
 
     fn suffix_array(input: &[u8]) -> Vec<i32> {
-        let mut workspace = SaisWorkspace::new();
+        let mut workspace = SaisWorkspace::default();
         let mut sa = vec![0; input.len()];
         let mut rank = vec![0u32; input.len()];
         workspace.suffix_array_with_rank(input, &mut sa, &mut rank);
