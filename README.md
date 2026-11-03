@@ -9,6 +9,9 @@ It trades compression speed for extremely fast single-threaded decompression
 (1.5-2x faster than LZ4) via a split-stream layout that separates control
 tokens from literal data.
 
+m77rip is safe Rust: every crate is `#![forbid(unsafe_code)]`. See
+[SAFETY.md](SAFETY.md).
+
 ## Usage
 
 ```rust
@@ -53,27 +56,14 @@ better.
 
 ![m77rip x86_64 performance summary](https://raw.githubusercontent.com/paddor/m77rip/main/doc/charts/x86_64/summary.svg)
 
-### Default build
-
 | Level | Encode MB/s (vs misa77) | Decode MB/s (vs misa77) | Ratio (vs misa77) |
 |-------|--------------------------|--------------------------|-------------------|
-| `-1` | 258 (0.90x) | 5436 (0.91x) | 1.955 (1.00x) |
-| `0` | 187 (0.94x) | 5847 (0.91x) | 2.052 (1.00x) |
-| `1` | 57.4 (0.97x) | 6641 (0.90x) | 2.169 (1.00x) |
-| `2` | 47.1 (1.05x) | 5296 (0.89x) | 2.294 (1.00x) |
-| `3` | 16.8 (1.70x) | 5073 (0.87x) | 2.440 (0.99x) |
-| `4` | 12.9 (1.45x) | 4059 (0.88x) | 2.525 (1.00x) |
-
-### Paranoid build (`--features paranoid`, no unsafe in m77rip crates)
-
-| Level | Encode MB/s (vs misa77) | Decode MB/s (vs misa77) | Ratio (vs misa77) |
-|-------|--------------------------|--------------------------|-------------------|
-| `-1` | 210 (0.73x) | 2611 (0.44x) | 1.955 (1.00x) |
-| `0` | 148 (0.75x) | 2406 (0.37x) | 2.052 (1.00x) |
-| `1` | 53.8 (0.91x) | 2600 (0.35x) | 2.169 (1.00x) |
-| `2` | 41.5 (0.93x) | 2074 (0.35x) | 2.294 (1.00x) |
-| `3` | 13.9 (1.40x) | 1926 (0.33x) | 2.440 (0.99x) |
-| `4` | 9.8 (1.10x) | 1038 (0.22x) | 2.525 (1.00x) |
+| `-1` | 280 (0.99x) | 5142 (0.86x) | 1.955 (1.00x) |
+| `0` | 172 (0.88x) | 5318 (0.83x) | 2.052 (1.00x) |
+| `1` | 56.9 (0.97x) | 5857 (0.80x) | 2.169 (1.00x) |
+| `2` | 44.1 (0.99x) | 4747 (0.80x) | 2.294 (1.00x) |
+| `3` | 15.5 (1.51x) | 4501 (0.77x) | 2.440 (0.99x) |
+| `4` | 11.9 (1.50x) | 3649 (0.80x) | 2.525 (1.00x) |
 
 ## `no_std` and 32-bit support
 

@@ -4,10 +4,15 @@ misa77 stores control tokens and literals in separate streams. The decoder
 reads tokens forward and literals backward, then performs fixed-size copies.
 The final 32 literal bytes provide safe padding for those copies.
 
-The encoder keeps a 16-way hash table keyed by 4-byte sequences. It inserts
-positions with a 32-byte lag, probes prior candidates, measures up to 32
-matching bytes, then emits a token: literal length, match length, and 16-bit
-distance. Literals are appended from the right side of the output buffer.
+Levels `-1` to `2` share one greedy loop. It probes a hash table of earlier
+positions (the latest per 6-byte hash at `-1` and `0`, a ring of 16 or 20 per
+4-byte hash at `1` and `2`), defers short matches as candidates, and emits
+when a candidate fires. Positions enter the tables 32 bytes late, so every
+match lies at least 33 bytes back. Levels `3` and `4` take the longest match
+among each position's suffix-array neighbors inside the distance window.
+Level `3` parses lazily; level `4` runs an exact shortest-path parse over
+token byte costs. Writers append tokens forward and literal runs backward
+from the end of the output, then join them.
 
 The decoder walks the token stream from byte 16 and the literal stream from
 the suffix boundary. Each token copies literals to the output cursor, then
