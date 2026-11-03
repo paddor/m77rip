@@ -21,8 +21,8 @@ const GROUP_LIT_MAX: usize = CHUNK;
 /// Output of one group token at most.
 const TOKEN_OUT_MAX: usize = GROUP_LIT_MAX + TOKEN_MATCH_MAX;
 
-/// Tokens decoded per group.
-const GROUP: usize = 4;
+/// Tokens decoded per group: four calls of [`Group::quad`].
+const GROUP: usize = 16;
 /// Literal bytes a group may consume.
 const GROUP_LITS: usize = GROUP * GROUP_LIT_MAX;
 /// Control bytes a group reads: headers with one extension byte each.
@@ -74,7 +74,8 @@ pub(crate) fn decode<S: Simd>(
 }
 
 /// Decode groups of tokens while the stream and output have room for
-/// a whole group. A token with a literal run over `GROUP_LIT_MAX` bytes
+/// a whole group. A token the group cannot take (a literal run over
+/// `GROUP_LIT_MAX` bytes, or a match reaching before the output start)
 /// ends its group and is decoded with every check.
 ///
 /// Each group borrows fixed-size windows: its control bytes, its literal
@@ -110,10 +111,10 @@ fn groups<const MAIN: bool>(
             at: start,
             ctl_at: 0,
         };
-        let done = group.token::<MAIN>()?
-            && group.token::<MAIN>()?
-            && group.token::<MAIN>()?
-            && group.token::<MAIN>()?;
+        let done = group.quad::<MAIN>()
+            && group.quad::<MAIN>()
+            && group.quad::<MAIN>()
+            && group.quad::<MAIN>();
         control += group.ctl_at;
         literals -= GROUP_LITS - group.lit;
         out += group.at - start;
@@ -153,13 +154,21 @@ struct Group<'a> {
 }
 
 impl Group<'_> {
+    /// Decode the next four tokens. Returns `false` at the first token the
+    /// group cannot take.
+    #[inline(always)]
+    fn quad<const MAIN: bool>(&mut self) -> bool {
+        self.token::<MAIN>() && self.token::<MAIN>() && self.token::<MAIN>() && self.token::<MAIN>()
+    }
+
     /// Decode the next token of the group. Returns `false`, consuming
-    /// nothing, if its literal run is longer than `GROUP_LIT_MAX`.
+    /// nothing, if its literal run is longer than `GROUP_LIT_MAX` or, before
+    /// `MAIN`, its match starts before the output.
     ///
     /// The 4-byte header load holds the first literal extension byte, so a
     /// run of up to `GROUP_LIT_MAX` bytes needs no extra read.
     #[inline(always)]
-    fn token<const MAIN: bool>(&mut self) -> Result<bool, Error> {
+    fn token<const MAIN: bool>(&mut self) -> bool {
         let header = u32::from_le_bytes(load(self.ctl, self.ctl_at)) as usize;
         let mut lit_len = (header >> TOKEN_MATCH_BITS) & TOKEN_LIT_MAX;
         if lit_len == TOKEN_LIT_MAX {
@@ -167,24 +176,24 @@ impl Group<'_> {
             // must not wait for this load.
             lit_len += header >> 24;
             if lit_len > GROUP_LIT_MAX {
-                return Ok(false);
+                return false;
             }
             self.ctl_at += 1;
+        }
+        let dis = ((header >> 8) & 0xFFFF) + MIN_DISTANCE;
+        if !MAIN && dis > self.at + lit_len {
+            // Undo the extension byte.
+            self.ctl_at -= usize::from(lit_len >= TOKEN_LIT_MAX);
+            return false;
         }
         self.ctl_at += TOKEN_LEN;
         self.lit -= lit_len;
         store(self.win, self.at, load::<CHUNK>(self.lits, self.lit));
         let at = self.at + lit_len;
-        let dis = ((header >> 8) & 0xFFFF) + MIN_DISTANCE;
-        let from = if MAIN {
-            at - dis
-        } else {
-            at.checked_sub(dis).ok_or(Error::CorruptInput)?
-        };
-        let chunk = load::<CHUNK>(self.win, from);
+        let chunk = load::<CHUNK>(self.win, at - dis);
         store(self.win, at, chunk);
         self.at = at + (header & TOKEN_MATCH_MASK as usize) + MIN_MATCH_LEN - 1;
-        Ok(true)
+        true
     }
 }
 

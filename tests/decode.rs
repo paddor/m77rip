@@ -417,9 +417,12 @@ fn push_extension(out: &mut Vec<u8>, mut remaining: usize) {
 }
 
 /// Light tokens with every literal-run class (inline, one extension byte,
-/// long) and distances up to the maximum, across the 64 KiB prefix.
+/// long) and distances up to the maximum, across the 64 KiB prefix. Runs
+/// of 18 group tokens fill whole groups.
 fn light_mixed_stream(bad_token_at: Option<usize>) -> (Vec<u8>, Vec<u8>) {
-    const LITS: [usize; 10] = [0, 3, 6, 7, 20, 32, 33, 100, 6, 1];
+    const LITS: [usize; 20] = [
+        0, 3, 6, 7, 20, 32, 6, 1, 0, 0, 5, 7, 31, 2, 9, 0, 12, 4, 33, 100,
+    ];
     const DISTANCES: [usize; 6] = [33, 40, 64, 1000, 30_000, MAX_DISTANCE];
     let mut stream = StreamBuilder::new(false);
     stream.token(40, 4, 33);
@@ -453,10 +456,34 @@ fn decompress_light_rejects_distance_past_output_in_prefix() {
 }
 
 /// Heavy tokens whose first match starts inside its own literals, with
-/// literal runs up to an extension and every match length.
+/// literal runs up to an extension and every match length. Runs of 18
+/// group tokens fill whole groups.
 fn heavy_mixed_stream(bad_token_at: Option<usize>) -> (Vec<u8>, Vec<u8>) {
-    const LITS: [usize; 8] = [40, 0, 5, 33, 62, 63, 64, 300];
-    const DISTANCES: [usize; 5] = [33, 50, 1000, 100_000, HEAVY_MAX_DISTANCE];
+    const LITS: [usize; 21] = [
+        40, 0, 5, 33, 62, 1, 2, 3, 10, 20, 30, 0, 0, 7, 8, 9, 11, 12, 63, 64, 300,
+    ];
+    const DISTANCES: [usize; 20] = [
+        33,
+        50,
+        1000,
+        100_000,
+        64,
+        40,
+        2000,
+        300,
+        33,
+        77,
+        5000,
+        34,
+        35,
+        600,
+        70_000,
+        90,
+        33,
+        120,
+        4000,
+        HEAVY_MAX_DISTANCE,
+    ];
     let mut stream = StreamBuilder::new(true);
     stream.token(40, 4, 33);
     let mut i = 0;

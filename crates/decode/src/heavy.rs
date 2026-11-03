@@ -22,8 +22,8 @@ const MATCH_ROOM: usize = 256;
 /// match chunks.
 const TOKEN_ROOM: usize = INLINE_LIT_MAX + MATCH_ROOM;
 
-/// Tokens decoded per group.
-const GROUP: usize = 4;
+/// Tokens decoded per group: four calls of [`Group::quad`].
+const GROUP: usize = 16;
 /// Literal bytes a group may consume.
 const GROUP_LITS: usize = GROUP * INLINE_LIT_MAX;
 /// Control bytes a group reads.
@@ -98,10 +98,10 @@ fn groups<const COND: bool>(src: &[u8], dst: &mut [u8], cursor: &mut Cursor, end
             out,
             tokens: 0,
         };
-        let done = group.token::<COND, 0>(dst)
-            && group.token::<COND, 1>(dst)
-            && group.token::<COND, 2>(dst)
-            && group.token::<COND, 3>(dst);
+        let done = group.quad::<COND>(dst, 0)
+            && group.quad::<COND>(dst, 4)
+            && group.quad::<COND>(dst, 8)
+            && group.quad::<COND>(dst, 12);
         control += group.tokens * TOKEN_LEN;
         literals -= GROUP_LITS - group.lit;
         out = group.out;
@@ -141,11 +141,21 @@ struct Group<'a> {
 }
 
 impl Group<'_> {
-    /// Decode token `N` of the group. Returns `false`, consuming nothing, if
+    /// Decode tokens `n..n + 4` of the group. Returns `false` at the first
+    /// token that needs the checked path.
+    #[inline(always)]
+    fn quad<const COND: bool>(&mut self, dst: &mut [u8], n: usize) -> bool {
+        self.token::<COND>(dst, n)
+            && self.token::<COND>(dst, n + 1)
+            && self.token::<COND>(dst, n + 2)
+            && self.token::<COND>(dst, n + 3)
+    }
+
+    /// Decode token `n` of the group. Returns `false`, consuming nothing, if
     /// the token needs the checked path.
     #[inline(always)]
-    fn token<const COND: bool, const N: usize>(&mut self, dst: &mut [u8]) -> bool {
-        let (lit_len, match_len, dis) = fields(u32::from_le_bytes(load(self.ctl, N * TOKEN_LEN)));
+    fn token<const COND: bool>(&mut self, dst: &mut [u8], n: usize) -> bool {
+        let (lit_len, match_len, dis) = fields(u32::from_le_bytes(load(self.ctl, n * TOKEN_LEN)));
         if lit_len > INLINE_LIT_MAX || match_len == 0 {
             return false;
         }
@@ -179,7 +189,7 @@ impl Group<'_> {
             }
         }
         self.out += lit_len + match_len;
-        self.tokens = N + 1;
+        self.tokens = n + 1;
         true
     }
 }

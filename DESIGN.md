@@ -19,7 +19,7 @@ the suffix boundary. Each token copies literals to the output cursor, then
 copies a match from earlier output in 32-byte chunks. Chunks may run past
 the exact length; the raw suffix gives them room.
 
-The decoder is safe Rust. It decodes tokens in groups of four. A group
+The decoder is safe Rust. It decodes tokens in groups of 16. A group
 borrows fixed-size arrays of its control bytes, its literal bytes, and its
 output, so offsets bounded by the token field widths need no bounds checks.
 Light groups past the first 64 KiB borrow the whole match history in one

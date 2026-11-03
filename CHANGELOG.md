@@ -6,7 +6,7 @@ All notable changes to this project will be documented in this file.
 
 - Removed all `unsafe` code. Every crate is `#![forbid(unsafe_code)]`.
   `paranoid` stays as a no-op feature.
-- Rewrote the decoder around groups of four tokens that copy through
+- Rewrote the decoder around groups of 16 tokens that copy through
   fixed-size windows, so the safe hot loops need almost no bounds checks.
   Over the first MiB of each Silesia file, light decoding is 1.6x to 1.9x
   and heavy decoding 2.7x the speed of the former paranoid build.
