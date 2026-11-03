@@ -8,7 +8,7 @@ use alloc::vec::Vec;
 fn empty_input() {
     let mut header = 0u64.to_le_bytes().to_vec();
     let result = decompress(&header, 0).unwrap();
-    assert!(result.is_empty());
+    assert_eq!(result, [] as [u8; 0]);
 
     header.truncate(4);
     assert!(decompress(&header, 0).is_err());

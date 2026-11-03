@@ -1,7 +1,5 @@
 #![deny(unsafe_op_in_unsafe_fn)]
 
-extern crate libc;
-
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -19,7 +17,7 @@ fn cpu_nanos() -> u64 {
         tv_nsec: 0,
     };
     // SAFETY: `ts` is a valid writable pointer to initialized storage.
-    unsafe { libc::clock_gettime(libc::CLOCK_PROCESS_CPUTIME_ID, &mut ts) };
+    unsafe { libc::clock_gettime(libc::CLOCK_PROCESS_CPUTIME_ID, &raw mut ts) };
     ts.tv_sec as u64 * 1_000_000_000 + ts.tv_nsec as u64
 }
 
@@ -66,16 +64,16 @@ fn main() {
     ensure_corpus();
 
     let args: Vec<String> = std::env::args().collect();
-    let codec = args.get(1).map(|s| s.as_str()).unwrap_or("m77rip");
+    let codec = args.get(1).map_or("m77rip", std::string::String::as_str);
     let file = args
         .get(2)
-        .map(|s| s.as_str())
-        .unwrap_or("corpus/silesia/dickens");
+        .map_or("corpus/silesia/dickens", std::string::String::as_str);
     let iters: u64 = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(2000);
     let level: i8 = args.get(4).and_then(|s| s.parse().ok()).unwrap_or(1);
-    if codec == "cpp" && !(-1..=4).contains(&level) {
-        panic!("C++ misa77 supports only levels -1 through 4");
-    }
+    assert!(
+        codec != "cpp" || (-1..=4).contains(&level),
+        "C++ misa77 supports only levels -1 through 4"
+    );
 
     let data = std::fs::read(file).unwrap_or_else(|e| panic!("{file}: {e}"));
 
@@ -94,47 +92,28 @@ fn main() {
 
     // Warmup
     for _ in 0..3 {
-        match codec {
-            "m77rip" => {
-                let _ = m77rip::compress_into_level(
-                    std::hint::black_box(&data),
-                    std::hint::black_box(&mut comp_buf),
-                    level,
-                );
-            }
-            "cpp" => {
-                c_compress_into(
-                    std::hint::black_box(&data),
-                    std::hint::black_box(&mut comp_buf),
-                    level,
-                );
-            }
-            _ => panic!("unknown codec: {codec}"),
-        }
+        compress_once(codec, &data, &mut comp_buf, level);
     }
 
     let start = cpu_nanos();
     for _ in 0..iters {
-        match codec {
-            "m77rip" => {
-                let _ = m77rip::compress_into_level(
-                    std::hint::black_box(&data),
-                    std::hint::black_box(&mut comp_buf),
-                    level,
-                );
-            }
-            "cpp" => {
-                c_compress_into(
-                    std::hint::black_box(&data),
-                    std::hint::black_box(&mut comp_buf),
-                    level,
-                );
-            }
-            _ => {}
-        }
+        compress_once(codec, &data, &mut comp_buf, level);
     }
     let elapsed = cpu_nanos() - start;
     let ns_per_op = elapsed as f64 / iters as f64;
     let mbps = data.len() as f64 / ns_per_op * 1000.0;
     eprintln!("{ns_per_op:.0} ns/op  {mbps:.0} MB/s");
+}
+
+fn compress_once(codec: &str, data: &[u8], out: &mut [u8], level: i8) {
+    let (data, out) = (std::hint::black_box(data), std::hint::black_box(out));
+    match codec {
+        "m77rip" => {
+            let _ = m77rip::compress_into_level(data, out, level);
+        }
+        "cpp" => {
+            c_compress_into(data, out, level);
+        }
+        _ => panic!("unknown codec: {codec}"),
+    }
 }

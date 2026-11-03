@@ -1,7 +1,5 @@
 #![deny(unsafe_op_in_unsafe_fn)]
 
-extern crate libc;
-
 use std::collections::HashSet;
 use std::io::Write;
 use std::path::PathBuf;
@@ -23,7 +21,7 @@ fn cpu_nanos() -> u64 {
         tv_nsec: 0,
     };
     // SAFETY: `ts` is a valid writable pointer to initialized storage.
-    unsafe { libc::clock_gettime(libc::CLOCK_PROCESS_CPUTIME_ID, &mut ts) };
+    unsafe { libc::clock_gettime(libc::CLOCK_PROCESS_CPUTIME_ID, &raw mut ts) };
     ts.tv_sec as u64 * 1_000_000_000 + ts.tv_nsec as u64
 }
 
@@ -295,9 +293,8 @@ fn load_cache(codecs: &[&str]) -> Vec<BenchResult> {
     let mut results = Vec::new();
     for codec in codecs {
         let path = codec_cache_path(codec);
-        let content = match std::fs::read_to_string(&path) {
-            Ok(c) => c,
-            Err(_) => continue,
+        let Ok(content) = std::fs::read_to_string(&path) else {
+            continue;
         };
         results.extend(content.lines().filter_map(BenchResult::from_json));
     }
@@ -397,7 +394,7 @@ fn ensure_corpus() {
             .status();
         match status {
             Ok(s) if s.success() => {
-                let size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+                let size = std::fs::metadata(path).map_or(0, |m| m.len());
                 eprintln!("  saved {path} ({size} bytes)");
             }
             _ => {
@@ -468,357 +465,190 @@ const ALL_FILES: &[&str] = &[
 const DEFAULT_MAX_BYTES: usize = 1024 * 1024;
 const LEVELS: &[i8] = &[-1, 0, 1, 2, 3, 4];
 
-const CPP_MISA77_M1: &str = "C++ misa77 level -1";
-const CPP_MISA77_0: &str = "C++ misa77 level 0";
-const CPP_MISA77_1: &str = "C++ misa77 level 1";
-const CPP_MISA77_2: &str = "C++ misa77 level 2";
-const CPP_MISA77_3: &str = "C++ misa77 level 3";
-const CPP_MISA77_4: &str = "C++ misa77 level 4";
-const CPP_MISA77_SAFE_0: &str = "C++ misa77 safe level 0";
+/// A benchmarked codec and level. Its name keys the result cache.
+#[derive(Clone, Copy)]
+enum Codec {
+    Cpp(i8),
+    CppSafe,
+    Compress(i8),
+    Decode(i8),
+}
 
-const M77RIP_COMPRESS_M1: &str = "m77rip compress level -1";
-const M77RIP_COMPRESS_0: &str = "m77rip compress level 0";
-const M77RIP_COMPRESS_1: &str = "m77rip compress level 1";
-const M77RIP_COMPRESS_2: &str = "m77rip compress level 2";
-const M77RIP_COMPRESS_3: &str = "m77rip compress level 3";
-const M77RIP_COMPRESS_4: &str = "m77rip compress level 4";
-const M77RIP_DECODE_M1: &str = "m77rip (from level -1)";
-const M77RIP_DECODE_0: &str = "m77rip (from level 0)";
-const M77RIP_DECODE_1: &str = "m77rip (from level 1)";
-const M77RIP_DECODE_2: &str = "m77rip (from level 2)";
-const M77RIP_DECODE_3: &str = "m77rip (from level 3)";
-const M77RIP_DECODE_4: &str = "m77rip (from level 4)";
+impl Codec {
+    fn all() -> Vec<Self> {
+        let mut all: Vec<Self> = LEVELS.iter().map(|&l| Self::Cpp(l)).collect();
+        all.push(Self::CppSafe);
+        all.extend(LEVELS.iter().map(|&l| Self::Compress(l)));
+        all.extend(LEVELS.iter().map(|&l| Self::Decode(l)));
+        all
+    }
 
-const CODECS: &[&str] = &[
-    CPP_MISA77_M1,
-    CPP_MISA77_0,
-    CPP_MISA77_1,
-    CPP_MISA77_2,
-    CPP_MISA77_3,
-    CPP_MISA77_4,
-    CPP_MISA77_SAFE_0,
-    M77RIP_COMPRESS_M1,
-    M77RIP_COMPRESS_0,
-    M77RIP_COMPRESS_1,
-    M77RIP_COMPRESS_2,
-    M77RIP_COMPRESS_3,
-    M77RIP_COMPRESS_4,
-    M77RIP_DECODE_M1,
-    M77RIP_DECODE_0,
-    M77RIP_DECODE_1,
-    M77RIP_DECODE_2,
-    M77RIP_DECODE_3,
-    M77RIP_DECODE_4,
-];
+    fn name(self) -> String {
+        match self {
+            Self::Cpp(level) => format!("C++ misa77 level {level}"),
+            Self::CppSafe => "C++ misa77 safe level 0".to_string(),
+            Self::Compress(level) => format!("m77rip compress level {level}"),
+            Self::Decode(level) => format!("m77rip (from level {level})"),
+        }
+    }
 
-fn cpp_codec(level: i8) -> &'static str {
-    match level {
-        -1 => CPP_MISA77_M1,
-        0 => CPP_MISA77_0,
-        1 => CPP_MISA77_1,
-        2 => CPP_MISA77_2,
-        3 => CPP_MISA77_3,
-        4 => CPP_MISA77_4,
-        _ => unreachable!(),
+    fn run(self, data: &[u8], name: &str, target_ns: u64) -> BenchResult {
+        match self {
+            Self::Cpp(level) => bench_c_misa77(data, name, target_ns, level),
+            Self::CppSafe => bench_c_misa77_safe(data, name, target_ns, 0),
+            Self::Compress(level) => bench_m77rip_compress(data, name, target_ns, level),
+            Self::Decode(level) => bench_m77rip(data, name, target_ns, level),
+        }
     }
 }
 
-fn m77rip_compress_codec(level: i8) -> &'static str {
-    match level {
-        -1 => M77RIP_COMPRESS_M1,
-        0 => M77RIP_COMPRESS_0,
-        1 => M77RIP_COMPRESS_1,
-        2 => M77RIP_COMPRESS_2,
-        3 => M77RIP_COMPRESS_3,
-        4 => M77RIP_COMPRESS_4,
-        _ => unreachable!(),
-    }
+/// Command-line options.
+struct Args {
+    only: Vec<String>,
+    files: Vec<String>,
+    max_bytes: Option<usize>,
 }
 
-fn m77rip_decode_codec(level: i8) -> &'static str {
-    match level {
-        -1 => M77RIP_DECODE_M1,
-        0 => M77RIP_DECODE_0,
-        1 => M77RIP_DECODE_1,
-        2 => M77RIP_DECODE_2,
-        3 => M77RIP_DECODE_3,
-        4 => M77RIP_DECODE_4,
-        _ => unreachable!(),
+impl Args {
+    /// Parse the command line. Returns `None` after printing help.
+    fn parse() -> Option<Self> {
+        let mut args = Self {
+            only: Vec::new(),
+            files: Vec::new(),
+            max_bytes: Some(DEFAULT_MAX_BYTES),
+        };
+        let mut words = std::env::args().skip(1);
+        while let Some(arg) = words.next() {
+            match arg.as_str() {
+                "--help" | "-h" => {
+                    println!(
+                        "usage: m77rip_bench [--impl TEXT] [--files a,b] [--max-bytes N|1MiB|1M]"
+                    );
+                    println!("default: --max-bytes 1MiB");
+                    return None;
+                }
+                "--impl" => args.only.extend(words.next()),
+                "--files" => {
+                    let files = words.next().unwrap_or_default();
+                    args.files.extend(files.split(',').map(str::to_string));
+                }
+                "--max-bytes" => {
+                    let value = words.next().unwrap_or_default();
+                    let bytes = parse_size_arg(&value)
+                        .unwrap_or_else(|| panic!("invalid --max-bytes value: {value}"));
+                    args.max_bytes = Some(bytes);
+                }
+                _ => {}
+            }
+        }
+        Some(args)
+    }
+
+    /// Corpus files to run, with their result names.
+    fn inputs(&self) -> Vec<(&'static str, String)> {
+        ALL_FILES
+            .iter()
+            .filter_map(|path| {
+                let base = path.rsplit('/').next().unwrap();
+                if !self.files.is_empty() && !self.files.iter().any(|f| f == base) {
+                    return None;
+                }
+                let name = match self.max_bytes {
+                    Some(max_bytes) => format!("{base}@{}", size_label(max_bytes)),
+                    None => base.to_string(),
+                };
+                Some((*path, name))
+            })
+            .collect()
+    }
+
+    fn should_run(&self, codec: &str) -> bool {
+        self.only.is_empty() || self.only.iter().any(|o| codec.contains(o.as_str()))
     }
 }
 
 fn main() {
     ensure_corpus();
-
-    let args: Vec<String> = std::env::args().collect();
-    let mut only: Vec<String> = Vec::new();
-    let mut file_filter: Vec<String> = Vec::new();
-    let mut max_bytes: Option<usize> = Some(DEFAULT_MAX_BYTES);
-    let mut i = 1;
-    while i < args.len() {
-        match args[i].as_str() {
-            "--help" | "-h" => {
-                println!("usage: m77rip_bench [--impl TEXT] [--files a,b] [--max-bytes N|1MiB|1M]");
-                println!("default: --max-bytes 1MiB");
-                return;
-            }
-            "--impl" => {
-                i += 1;
-                if i < args.len() {
-                    only.push(args[i].clone());
-                }
-            }
-            "--files" => {
-                i += 1;
-                if i < args.len() {
-                    file_filter.extend(args[i].split(',').map(|s| s.to_string()));
-                }
-            }
-            "--max-bytes" => {
-                i += 1;
-                if i < args.len() {
-                    max_bytes = Some(
-                        parse_size_arg(&args[i])
-                            .unwrap_or_else(|| panic!("invalid --max-bytes value: {}", args[i])),
-                    );
-                }
-            }
-            _ => {}
-        }
-        i += 1;
-    }
-
-    let target_ns = 20_000_000u64;
-    let cached = load_cache(CODECS);
-    let mut results: Vec<BenchResult> = Vec::new();
-
-    for path in ALL_FILES {
-        let base_name = path.rsplit('/').next().unwrap();
-        if !file_filter.is_empty() && !file_filter.iter().any(|f| f == base_name) {
+    let Some(args) = Args::parse() else {
+        return;
+    };
+    let codecs = Codec::all();
+    let names: Vec<String> = codecs.iter().map(|c| c.name()).collect();
+    let names: Vec<&str> = names.iter().map(String::as_str).collect();
+    let cached = load_cache(&names);
+    let mut results = Vec::new();
+    for (path, name) in args.inputs() {
+        let Ok(mut data) = std::fs::read(path) else {
+            eprintln!("skipping {path}: not found");
             continue;
-        }
-
-        let mut data = match std::fs::read(path) {
-            Ok(d) => d,
-            Err(_) => {
-                eprintln!("skipping {path}: not found");
-                continue;
-            }
         };
-        if let Some(max_bytes) = max_bytes {
+        if let Some(max_bytes) = args.max_bytes {
             data.truncate(max_bytes.min(data.len()));
         }
-        let name = match max_bytes {
-            Some(max_bytes) => format!("{base_name}@{}", size_label(max_bytes)),
-            None => base_name.to_string(),
-        };
-
-        for &codec in CODECS {
-            let should_run = only.is_empty() || only.iter().any(|o| codec.contains(o.as_str()));
-
-            if !should_run
-                && let Some(c) = cached
-                    .iter()
-                    .find(|c| c.codec == codec && c.input_name == name)
+        for &codec in &codecs {
+            let codec_name = codec.name();
+            if args.should_run(&codec_name) {
+                eprintln!("  {codec_name} x {name}: benchmarking...");
+                results.push(codec.run(&data, &name, 20_000_000));
+            } else if let Some(c) = cached
+                .iter()
+                .find(|c| c.codec == codec_name && c.input_name == name)
             {
-                eprintln!("  {codec} x {name}: cached");
+                eprintln!("  {codec_name} x {name}: cached");
                 results.push(c.clone());
-                continue;
+            } else {
+                eprintln!("  {codec_name} x {name}: skipped");
             }
-            if !should_run {
-                eprintln!("  {codec} x {name}: skipped");
-                continue;
-            }
+        }
+    }
+    save_cache(&results, &names);
+    print_table("Decompression", &args, &results, Codec::Decode, |r| {
+        r.decompress_ns
+    });
+    print_table("Compression", &args, &results, Codec::Compress, |r| {
+        r.compress_ns
+    });
+}
 
-            eprintln!("  {codec} x {name}: benchmarking...");
-            let r = match codec {
-                CPP_MISA77_M1 => bench_c_misa77(&data, &name, target_ns, -1),
-                CPP_MISA77_0 => bench_c_misa77(&data, &name, target_ns, 0),
-                CPP_MISA77_1 => bench_c_misa77(&data, &name, target_ns, 1),
-                CPP_MISA77_2 => bench_c_misa77(&data, &name, target_ns, 2),
-                CPP_MISA77_3 => bench_c_misa77(&data, &name, target_ns, 3),
-                CPP_MISA77_4 => bench_c_misa77(&data, &name, target_ns, 4),
-                CPP_MISA77_SAFE_0 => bench_c_misa77_safe(&data, &name, target_ns, 0),
-                M77RIP_COMPRESS_M1 => {
-                    let mut r = bench_m77rip_compress(&data, &name, target_ns, -1);
-                    r.codec = M77RIP_COMPRESS_M1.to_string();
-                    r
+/// Print C++ against m77rip speeds per input and level. `ns` picks the
+/// timing; zero means not measured.
+fn print_table(
+    title: &str,
+    args: &Args,
+    results: &[BenchResult],
+    rust: fn(i8) -> Codec,
+    ns: fn(&BenchResult) -> f64,
+) {
+    println!();
+    println!("=== {title} ===");
+    println!(
+        "{:<12} {:>5} {:>12} {:>12} {:>8}",
+        "input", "level", "C++", "m77rip", "ratio"
+    );
+    println!("{}", "-".repeat(55));
+    let mbps = |r: Option<&BenchResult>| match r {
+        Some(r) if ns(r) > 0.0 => format!("{:.0} MB/s", r.input_size as f64 / ns(r) * 1000.0),
+        _ => "-".to_string(),
+    };
+    for (_, name) in args.inputs() {
+        let find = |codec: Codec| {
+            let codec = codec.name();
+            results
+                .iter()
+                .find(|r| r.codec == codec && r.input_name == name)
+        };
+        for &level in LEVELS {
+            let (cpp, rust) = (find(Codec::Cpp(level)), find(rust(level)));
+            let ratio = match (cpp, rust) {
+                (Some(c), Some(r)) if ns(c) > 0.0 && ns(r) > 0.0 => {
+                    format!("{:.2}x", ns(c) / ns(r))
                 }
-                M77RIP_COMPRESS_0 => {
-                    let mut r = bench_m77rip_compress(&data, &name, target_ns, 0);
-                    r.codec = M77RIP_COMPRESS_0.to_string();
-                    r
-                }
-                M77RIP_COMPRESS_1 => {
-                    let mut r = bench_m77rip_compress(&data, &name, target_ns, 1);
-                    r.codec = M77RIP_COMPRESS_1.to_string();
-                    r
-                }
-                M77RIP_COMPRESS_2 => {
-                    let mut r = bench_m77rip_compress(&data, &name, target_ns, 2);
-                    r.codec = M77RIP_COMPRESS_2.to_string();
-                    r
-                }
-                M77RIP_COMPRESS_3 => {
-                    let mut r = bench_m77rip_compress(&data, &name, target_ns, 3);
-                    r.codec = M77RIP_COMPRESS_3.to_string();
-                    r
-                }
-                M77RIP_COMPRESS_4 => {
-                    let mut r = bench_m77rip_compress(&data, &name, target_ns, 4);
-                    r.codec = M77RIP_COMPRESS_4.to_string();
-                    r
-                }
-                M77RIP_DECODE_M1 => {
-                    let mut r = bench_m77rip(&data, &name, target_ns, -1);
-                    r.codec = M77RIP_DECODE_M1.to_string();
-                    r
-                }
-                M77RIP_DECODE_0 => {
-                    let mut r = bench_m77rip(&data, &name, target_ns, 0);
-                    r.codec = M77RIP_DECODE_0.to_string();
-                    r
-                }
-                M77RIP_DECODE_1 => {
-                    let mut r = bench_m77rip(&data, &name, target_ns, 1);
-                    r.codec = M77RIP_DECODE_1.to_string();
-                    r
-                }
-                M77RIP_DECODE_2 => {
-                    let mut r = bench_m77rip(&data, &name, target_ns, 2);
-                    r.codec = M77RIP_DECODE_2.to_string();
-                    r
-                }
-                M77RIP_DECODE_3 => {
-                    let mut r = bench_m77rip(&data, &name, target_ns, 3);
-                    r.codec = M77RIP_DECODE_3.to_string();
-                    r
-                }
-                M77RIP_DECODE_4 => {
-                    let mut r = bench_m77rip(&data, &name, target_ns, 4);
-                    r.codec = M77RIP_DECODE_4.to_string();
-                    r
-                }
-                _ => unreachable!(),
+                _ => "-".to_string(),
             };
-            results.push(r);
-        }
-    }
-
-    save_cache(&results, CODECS);
-
-    println!();
-    println!("=== Decompression ===");
-    println!(
-        "{:<12} {:>5} {:>12} {:>12} {:>8}",
-        "input", "level", "C++", "m77rip", "ratio"
-    );
-    println!("{}", "-".repeat(55));
-
-    let fmt_mbps_decomp = |r: Option<&BenchResult>| -> String {
-        match r {
-            Some(r) if r.decompress_ns > 0.0 => {
-                let mbps = r.input_size as f64 / r.decompress_ns * 1000.0;
-                format!("{mbps:.0} MB/s")
-            }
-            _ => "-".to_string(),
-        }
-    };
-
-    let fmt_mbps_comp = |r: Option<&BenchResult>| -> String {
-        match r {
-            Some(r) if r.compress_ns > 0.0 => {
-                let mbps = r.input_size as f64 / r.compress_ns * 1000.0;
-                format!("{mbps:.0} MB/s")
-            }
-            _ => "-".to_string(),
-        }
-    };
-
-    let fmt_ratio_decomp = |cpp: Option<&BenchResult>, rust: Option<&BenchResult>| -> String {
-        match (cpp, rust) {
-            (Some(c), Some(r)) if c.decompress_ns > 0.0 && r.decompress_ns > 0.0 => {
-                let ratio = c.decompress_ns / r.decompress_ns;
-                format!("{ratio:.2}x")
-            }
-            _ => "-".to_string(),
-        }
-    };
-
-    let fmt_ratio_comp = |cpp: Option<&BenchResult>, rust: Option<&BenchResult>| -> String {
-        match (cpp, rust) {
-            (Some(c), Some(r)) if c.compress_ns > 0.0 && r.compress_ns > 0.0 => {
-                let ratio = c.compress_ns / r.compress_ns;
-                format!("{ratio:.2}x")
-            }
-            _ => "-".to_string(),
-        }
-    };
-
-    for path in ALL_FILES {
-        let base_name = path.rsplit('/').next().unwrap();
-        if !file_filter.is_empty() && !file_filter.iter().any(|f| f == base_name) {
-            continue;
-        }
-        let name = match max_bytes {
-            Some(max_bytes) => format!("{base_name}@{}", size_label(max_bytes)),
-            None => base_name.to_string(),
-        };
-
-        let find = |codec: &str| -> Option<&BenchResult> {
-            results
-                .iter()
-                .find(|r| r.codec == codec && r.input_name == name)
-        };
-
-        for &level in LEVELS {
-            let cpp = cpp_codec(level);
-            let rust = m77rip_decode_codec(level);
             println!(
-                "{:<12} {:>5} {:>12} {:>12} {:>8}",
-                name,
-                level,
-                fmt_mbps_decomp(find(cpp)),
-                fmt_mbps_decomp(find(rust)),
-                fmt_ratio_decomp(find(cpp), find(rust)),
-            );
-        }
-    }
-
-    println!();
-    println!("=== Compression ===");
-    println!(
-        "{:<12} {:>5} {:>12} {:>12} {:>8}",
-        "input", "level", "C++", "m77rip", "ratio"
-    );
-    println!("{}", "-".repeat(55));
-
-    for path in ALL_FILES {
-        let base_name = path.rsplit('/').next().unwrap();
-        if !file_filter.is_empty() && !file_filter.iter().any(|f| f == base_name) {
-            continue;
-        }
-        let name = match max_bytes {
-            Some(max_bytes) => format!("{base_name}@{}", size_label(max_bytes)),
-            None => base_name.to_string(),
-        };
-
-        let find = |codec: &str| -> Option<&BenchResult> {
-            results
-                .iter()
-                .find(|r| r.codec == codec && r.input_name == name)
-        };
-
-        for &level in LEVELS {
-            let cpp = cpp_codec(level);
-            let rust = m77rip_compress_codec(level);
-            println!(
-                "{:<12} {:>5} {:>12} {:>12} {:>8}",
-                name,
-                level,
-                fmt_mbps_comp(find(cpp)),
-                fmt_mbps_comp(find(rust)),
-                fmt_ratio_comp(find(cpp), find(rust)),
+                "{name:<12} {level:>5} {:>12} {:>12} {ratio:>8}",
+                mbps(cpp),
+                mbps(rust)
             );
         }
     }

@@ -47,6 +47,25 @@ cc = { version = "1", optional = true }
 proptest = "1.0.0"
 libc = "0.2"
 
+[lints]
+workspace = true
+
+[workspace.lints.rust]
+missing_debug_implementations = "warn"
+rust_2018_idioms = { level = "warn", priority = -1 }
+unreachable_pub = "warn"
+
+[workspace.lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+# A codec narrows and widens fixed-width fields everywhere on purpose.
+cast_possible_truncation = "allow"
+cast_possible_wrap = "allow"
+cast_sign_loss = "allow"
+# Benchmark tools turn counters into floating-point rates.
+cast_precision_loss = "allow"
+# Hot-loop helpers need guaranteed inlining into SIMD dispatch.
+inline_always = "allow"
+
 [profile.release]
 codegen-units = 1
 opt-level = 3

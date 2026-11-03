@@ -100,15 +100,15 @@ impl SaWorkspace {
     fn scan<S: Simd, L: Limits>(&mut self, simd: S, src: &[u8], block: Block) {
         let seg_start = self.seg_start;
         let mut carry = Carry { len: 0, dis: 0 };
-        let set_start = block.start.max(seg_start + L::MIN_DISTANCE);
-        let clear_start = block.start.max(seg_start + L::MAX_DISTANCE + 1);
+        let enter_from = block.start.max(seg_start + L::MIN_DISTANCE);
+        let leave_from = block.start.max(seg_start + L::MAX_DISTANCE + 1);
         for pos in block.start..block.end {
             let i = pos - block.start;
-            if pos >= set_start {
+            if pos >= enter_from {
                 let rank = self.rank[pos - L::MIN_DISTANCE - seg_start];
                 self.live.set(rank as usize);
             }
-            if pos >= clear_start {
+            if pos >= leave_from {
                 let rank = self.rank[pos - L::MAX_DISTANCE - 1 - seg_start];
                 self.live.clear(rank as usize);
             }

@@ -98,10 +98,10 @@ fn test_so_many_zeros() {
 
 #[test]
 fn repetitive_text() {
-    let s = r#"An iterator that knows its exact length.
+    let s = r"An iterator that knows its exact length.
         Many Iterators don't know how many times they will iterate, but some do. If an iterator knows how many times it can iterate, providing access to that information can be useful. For example, if you want to iterate backwards, a good start is to know where the end is.
         When implementing an ExactSizeIterator, you must also implement Iterator. When doing so, the implementation of size_hint must return the exact size of the iterator.
-        The len method has a default implementation, so you usually shouldn't implement it. However, you may be able to provide a more performant implementation than the default, so overriding it in this case makes sense."#;
+        The len method has a default implementation, so you usually shouldn't implement it. However, you may be able to provide a more performant implementation than the default, so overriding it in this case makes sense.";
 
     test_roundtrip(s);
 }
@@ -200,7 +200,7 @@ fn all_levels_dickens_chunks() {
     let Ok(data) = std::fs::read("corpus/silesia/dickens") else {
         return;
     };
-    for &n in &[65536, 100000] {
+    for &n in &[65_536, 100_000] {
         let chunk = &data[..n.min(data.len())];
         for level in [-1, 0, 1, 2, 3, 4] {
             let compressed = m77rip::compress_level(chunk, level).unwrap();
@@ -371,7 +371,7 @@ proptest! {
     #[test]
     #[cfg_attr(miri, ignore)]
     fn proptest_roundtrip(v in vec_of_vec()) {
-        let data: Vec<u8> = v.iter().flat_map(|v| v.iter()).cloned().collect::<Vec<_>>();
+        let data: Vec<u8> = v.iter().flat_map(|v| v.iter()).copied().collect::<Vec<_>>();
         test_roundtrip(data);
     }
 }

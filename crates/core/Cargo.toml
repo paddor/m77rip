@@ -11,3 +11,6 @@ repository = "https://github.com/paddor/m77rip"
 default = ["std"]
 std = []
 paranoid = []
+
+[lints]
+workspace = true

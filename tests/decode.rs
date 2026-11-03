@@ -15,7 +15,7 @@ fn push_literal_extension(out: &mut Vec<u8>, literal_len: usize) {
 }
 
 fn heavy_header(size: usize, flags: u8) -> [u8; 8] {
-    ((size as u64) | ((flags as u64) << FLAG_SHIFT)).to_le_bytes()
+    ((size as u64) | (u64::from(flags) << FLAG_SHIFT)).to_le_bytes()
 }
 
 fn heavy_token(lit_len: usize, match_code: usize, distance_delta: u32) -> [u8; 4] {
@@ -48,7 +48,7 @@ fn decompressed_size_zero() {
 fn decompress_empty() {
     let header = 0u64.to_le_bytes();
     let result = decompress(&header, 0).unwrap();
-    assert!(result.is_empty());
+    assert_eq!(result, [] as [u8; 0]);
 }
 
 #[test]
