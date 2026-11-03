@@ -4,7 +4,7 @@
 //! a word or a 32-byte vector compare.
 
 use fearless_simd::{Simd, prelude::*, u8x32};
-use m77rip_core::format::{HASHTAB_LAG, MAX_MATCH_LEN, VECTOR_WIDTH};
+use m77rip_core::format::{MAX_MATCH_LEN, VECTOR_WIDTH};
 
 /// Slots of a greedy hash table.
 pub(crate) const HASH_SIZE: usize = 1 << 16;
@@ -24,17 +24,6 @@ pub(crate) fn hash4(val: u32) -> usize {
 #[inline(always)]
 pub(crate) fn hash6(val: u64) -> usize {
     ((val & HASH6_MASK).wrapping_mul(HASH6_MUL) >> 48) as usize
-}
-
-/// Position of a 16-bit table entry: the latest position at least
-/// `HASHTAB_LAG + 1` bytes before `pos` whose low 16 bits are `entry`.
-#[inline(always)]
-pub(crate) fn recover_entry_pos(entry: u16, pos: usize) -> usize {
-    let d = (pos as u16)
-        .wrapping_sub(entry)
-        .wrapping_sub((HASHTAB_LAG + 1) as u16);
-    pos.wrapping_sub(MAX_MATCH_LEN + 1)
-        .wrapping_sub(usize::from(d))
 }
 
 /// Borrow `N` bytes of `src` at `pos` as an array.
