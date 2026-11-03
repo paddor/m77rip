@@ -14,6 +14,8 @@ const BATCH: usize = 8;
 /// Bytes a batch reads: one 8-byte hash input per position.
 const BATCH_READ: usize = BATCH + 7;
 
+const _: () = assert!(BATCH % 2 == 0);
+
 /// A greedy match finder.
 pub(crate) trait Matcher {
     fn new() -> Self;
@@ -173,7 +175,9 @@ impl Matcher for Swift {
         let (table6, table4) = (&mut self.table6, &mut self.table4);
         insert_batches(src, &mut self.next, pos, |bytes, i, at| {
             table6.insert(hash6(read_u64(bytes, i)), at);
-            if at & 1 == 0 {
+            // Batches start at multiples of `BATCH`, so `i` has the parity
+            // of `at`, and the compiler sees it.
+            if i & 1 == 0 {
                 table4.insert(hash4(read_u32(bytes, i)), at);
             }
         });
