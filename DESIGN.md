@@ -24,12 +24,13 @@ borrows fixed-size arrays of its control bytes, its literal bytes, and its
 output, so offsets bounded by the token field widths need no bounds checks.
 Groups past the maximum distance (64 KiB light, 1 MiB heavy) borrow the
 whole match history in one array; earlier light groups check each
-distance. Heavy outputs of at least 1 MiB decode their first MiB in one
+distance. Light outputs under 64 KiB use the whole output as their window,
+with bounds checks. Heavy outputs of at least 1 MiB decode their first MiB in one
 array too; elsewhere each heavy token borrows its own window from the
 match source. Heavy output before and after the maximum distance decodes
 in separately dispatched functions. Tokens a group cannot take, such as
 long literal runs, and tokens near the stream end go through a fully
-checked step, as do light outputs under 64 KiB.
+checked step.
 
 Encode and decode live in separate crates to keep hot-loop code generation
 independent.

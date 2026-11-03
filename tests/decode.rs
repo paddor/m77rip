@@ -417,9 +417,9 @@ fn push_extension(out: &mut Vec<u8>, mut remaining: usize) {
 }
 
 /// Light tokens with every literal-run class (inline, one extension byte,
-/// long) and distances up to the maximum, across the 64 KiB prefix. Runs
-/// of 18 group tokens fill whole groups.
-fn light_mixed_stream(bad_token_at: Option<usize>) -> (Vec<u8>, Vec<u8>) {
+/// long) and distances up to the maximum, up to `len` bytes of output.
+/// Runs of 18 group tokens fill whole groups.
+fn light_mixed_stream(len: usize, bad_token_at: Option<usize>) -> (Vec<u8>, Vec<u8>) {
     const LITS: [usize; 20] = [
         0, 3, 6, 7, 20, 32, 6, 1, 0, 0, 5, 7, 31, 2, 9, 0, 12, 4, 33, 100,
     ];
@@ -427,7 +427,7 @@ fn light_mixed_stream(bad_token_at: Option<usize>) -> (Vec<u8>, Vec<u8>) {
     let mut stream = StreamBuilder::new(false);
     stream.token(40, 4, 33);
     let mut i = 0;
-    while stream.out() < 3 * MAX_DISTANCE / 2 {
+    while stream.out() < len {
         let lit_len = LITS[i % LITS.len()];
         let match_len = 4 + i % 29;
         let mut dis = DISTANCES[i % DISTANCES.len()].min(stream.out() + lit_len);
@@ -442,17 +442,36 @@ fn light_mixed_stream(bad_token_at: Option<usize>) -> (Vec<u8>, Vec<u8>) {
 
 #[test]
 fn decompress_light_mixed_tokens_across_prefix() {
-    let (stream, expected) = light_mixed_stream(None);
+    let (stream, expected) = light_mixed_stream(3 * MAX_DISTANCE / 2, None);
     assert_eq!(decompress(&stream, expected.len()).unwrap(), expected);
 }
 
 #[test]
 fn decompress_light_rejects_distance_past_output_in_prefix() {
-    let (stream, expected) = light_mixed_stream(Some(5));
+    let (stream, expected) = light_mixed_stream(3 * MAX_DISTANCE / 2, Some(5));
     assert_eq!(
         decompress(&stream, expected.len()),
         Err(Error::CorruptInput)
     );
+}
+
+#[test]
+fn decompress_light_mixed_tokens_short_output() {
+    for len in [3000, 20_000, 60_000] {
+        let (stream, expected) = light_mixed_stream(len, None);
+        assert_eq!(decompress(&stream, expected.len()).unwrap(), expected);
+    }
+}
+
+#[test]
+fn decompress_light_rejects_distance_past_output_in_short_output() {
+    for bad in [5, 300] {
+        let (stream, expected) = light_mixed_stream(20_000, Some(bad));
+        assert_eq!(
+            decompress(&stream, expected.len()),
+            Err(Error::CorruptInput)
+        );
+    }
 }
 
 /// Heavy tokens whose first match starts inside its own literals, with

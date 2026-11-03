@@ -59,12 +59,10 @@ pub(crate) fn decode<S: Simd>(
     let mut cursor = layout.start();
     while cursor.control < cursor.literals {
         if dst.len() >= OUT_WIN {
-            if cursor.out <= MAX_DISTANCE {
-                groups::<false>(src, dst, &mut cursor, end)?;
-            }
-            if cursor.out > MAX_DISTANCE {
-                groups::<true>(src, dst, &mut cursor, end)?;
-            }
+            groups::<Prefix>(src, dst, &mut cursor, end)?;
+            groups::<Main>(src, dst, &mut cursor, end)?;
+        } else {
+            groups::<Whole>(src, dst, &mut cursor, end)?;
         }
         if cursor.control < cursor.literals {
             checked_step(src, dst, &mut cursor, end)?;
@@ -73,19 +71,83 @@ pub(crate) fn decode<S: Simd>(
     Ok(cursor)
 }
 
+/// Where a group's output window lies. Every group also borrows
+/// fixed-size windows of its control and literal bytes.
+trait Placement {
+    /// Whether a match may reach before the window start, so each distance
+    /// needs a check.
+    const CHECKED: bool;
+
+    /// Whether a group starting at output `out` can use this placement.
+    fn fits(out: usize) -> bool;
+
+    /// Borrow the window of a group starting at output `out`. Returns it
+    /// with the group's start in it.
+    fn window(dst: &mut [u8], out: usize) -> (&mut [u8], usize);
+}
+
+/// The whole output, for outputs too short for `OUT_WIN` arrays. Its
+/// offsets keep their bounds checks.
+struct Whole;
+
+impl Placement for Whole {
+    const CHECKED: bool = true;
+
+    #[inline(always)]
+    fn fits(_out: usize) -> bool {
+        true
+    }
+
+    #[inline(always)]
+    fn window(dst: &mut [u8], out: usize) -> (&mut [u8], usize) {
+        (dst, out)
+    }
+}
+
+/// An array at the output start, for groups within `MAX_DISTANCE` of it.
+struct Prefix;
+
+impl Placement for Prefix {
+    const CHECKED: bool = true;
+
+    #[inline(always)]
+    fn fits(out: usize) -> bool {
+        out <= MAX_DISTANCE
+    }
+
+    #[inline(always)]
+    fn window(dst: &mut [u8], out: usize) -> (&mut [u8], usize) {
+        (array_mut::<OUT_WIN>(dst, 0), out)
+    }
+}
+
+/// An array from `MAX_DISTANCE` bytes before the group, so no match
+/// reaches before it.
+struct Main;
+
+impl Placement for Main {
+    const CHECKED: bool = false;
+
+    #[inline(always)]
+    fn fits(out: usize) -> bool {
+        out > MAX_DISTANCE
+    }
+
+    #[inline(always)]
+    fn window(dst: &mut [u8], out: usize) -> (&mut [u8], usize) {
+        (array_mut::<OUT_WIN>(dst, out - MAX_DISTANCE), MAX_DISTANCE)
+    }
+}
+
 /// Decode groups of tokens while the stream and output have room for
-/// a whole group. A token the group cannot take (a literal run over
-/// `GROUP_LIT_MAX` bytes, or a match reaching before the output start)
-/// ends its group and is decoded with every check.
+/// a whole group and `P` fits. A token the group cannot take (a literal
+/// run over `GROUP_LIT_MAX` bytes, or a match reaching before the output
+/// start) ends its group and is decoded with every check.
 ///
-/// Each group borrows fixed-size windows: its control bytes, its literal
-/// bytes, and its output with the `MAX_DISTANCE` bytes before it. Every
-/// offset into them is bounded by the token field widths, so the token
-/// copies need no bounds checks. `MAIN` groups start past `MAX_DISTANCE`,
-/// where no match can reach before the output start. Earlier groups use a
-/// window at the output start and check each distance.
+/// In array windows, every offset is bounded by the token field widths, so
+/// the token copies need no bounds checks.
 #[inline(always)]
-fn groups<const MAIN: bool>(
+fn groups<P: Placement>(
     src: &[u8],
     dst: &mut [u8],
     cursor: &mut Cursor,
@@ -96,25 +158,17 @@ fn groups<const MAIN: bool>(
         mut literals,
         mut out,
     } = *cursor;
-    while literals - control >= GROUP_SRC && end - out >= GROUP_OUT && (MAIN || out <= MAX_DISTANCE)
-    {
-        let (base, start) = if MAIN {
-            (out - MAX_DISTANCE, MAX_DISTANCE)
-        } else {
-            (0, out)
-        };
+    while literals - control >= GROUP_SRC && end - out >= GROUP_OUT && P::fits(out) {
+        let (win, start) = P::window(dst, out);
         let mut group = Group {
             ctl: array(src, control),
             lits: array(src, literals - GROUP_LITS),
-            win: array_mut(dst, base),
+            win,
             lit: GROUP_LITS,
             at: start,
             ctl_at: 0,
         };
-        let done = group.quad::<MAIN>()
-            && group.quad::<MAIN>()
-            && group.quad::<MAIN>()
-            && group.quad::<MAIN>();
+        let done = group.quad::<P>() && group.quad::<P>() && group.quad::<P>() && group.quad::<P>();
         control += group.ctl_at;
         literals -= GROUP_LITS - group.lit;
         out += group.at - start;
@@ -144,7 +198,7 @@ fn groups<const MAIN: bool>(
 struct Group<'a> {
     ctl: &'a [u8; CTL_WIN],
     lits: &'a [u8; LIT_WIN],
-    win: &'a mut [u8; OUT_WIN],
+    win: &'a mut [u8],
     /// End of the unread literals in `lits`.
     lit: usize,
     /// Output position in `win`.
@@ -157,18 +211,18 @@ impl Group<'_> {
     /// Decode the next four tokens. Returns `false` at the first token the
     /// group cannot take.
     #[inline(always)]
-    fn quad<const MAIN: bool>(&mut self) -> bool {
-        self.token::<MAIN>() && self.token::<MAIN>() && self.token::<MAIN>() && self.token::<MAIN>()
+    fn quad<P: Placement>(&mut self) -> bool {
+        self.token::<P>() && self.token::<P>() && self.token::<P>() && self.token::<P>()
     }
 
     /// Decode the next token of the group. Returns `false`, consuming
-    /// nothing, if its literal run is longer than `GROUP_LIT_MAX` or, before
-    /// `MAIN`, its match starts before the output.
+    /// nothing, if its literal run is longer than `GROUP_LIT_MAX` or its
+    /// match starts before the output.
     ///
     /// The 4-byte header load holds the first literal extension byte, so a
     /// run of up to `GROUP_LIT_MAX` bytes needs no extra read.
     #[inline(always)]
-    fn token<const MAIN: bool>(&mut self) -> bool {
+    fn token<P: Placement>(&mut self) -> bool {
         let header = u32::from_le_bytes(load(self.ctl, self.ctl_at)) as usize;
         let mut lit_len = (header >> TOKEN_MATCH_BITS) & TOKEN_LIT_MAX;
         if lit_len == TOKEN_LIT_MAX {
@@ -181,7 +235,7 @@ impl Group<'_> {
             self.ctl_at += 1;
         }
         let dis = ((header >> 8) & 0xFFFF) + MIN_DISTANCE;
-        if !MAIN && dis > self.at + lit_len {
+        if P::CHECKED && dis > self.at + lit_len {
             // Undo the extension byte.
             self.ctl_at -= usize::from(lit_len >= TOKEN_LIT_MAX);
             return false;
