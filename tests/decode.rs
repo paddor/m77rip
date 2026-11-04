@@ -1,6 +1,7 @@
 use m77rip::{Error, decompress, decompress_into, decompressed_size};
 use m77rip_core::format::{
-    EXT_HEADER_SIZE, FLAG_HEAVY, FLAG_HEAVY_COND, FLAG_SHIFT, HEAVY_LITERAL_SUFFIX, MAX_DISTANCE,
+    EXT_HEADER_SIZE, FLAG_HEAVY, FLAG_HEAVY_COND, FLAG_SHIFT, HEAVY_LEN_OF, HEAVY_LITERAL_SUFFIX,
+    HEAVY_MAX_DISTANCE, HEAVY_TOKEN_LIT_MAX, LITERAL_SUFFIX, MAX_DISTANCE, MIN_DISTANCE,
     MIN_MATCH_LEN, TOKEN_LIT_MAX, TOKEN_MATCH_BITS,
 };
 
@@ -14,7 +15,7 @@ fn push_literal_extension(out: &mut Vec<u8>, literal_len: usize) {
 }
 
 fn heavy_header(size: usize, flags: u8) -> [u8; 8] {
-    ((size as u64) | ((flags as u64) << FLAG_SHIFT)).to_le_bytes()
+    ((size as u64) | (u64::from(flags) << FLAG_SHIFT)).to_le_bytes()
 }
 
 fn heavy_token(lit_len: usize, match_code: usize, distance_delta: u32) -> [u8; 4] {
@@ -47,7 +48,7 @@ fn decompressed_size_zero() {
 fn decompress_empty() {
     let header = 0u64.to_le_bytes();
     let result = decompress(&header, 0).unwrap();
-    assert!(result.is_empty());
+    assert_eq!(result, [] as [u8; 0]);
 }
 
 #[test]
@@ -319,4 +320,263 @@ fn decompress_handcrafted_with_literals() {
 
     let result = decompress(&compressed, 80).unwrap();
     assert_eq!(result, original);
+}
+
+/// Builds a stream token by token, with the output it decodes to.
+struct StreamBuilder {
+    heavy: bool,
+    tokens: Vec<u8>,
+    runs: Vec<Vec<u8>>,
+    expected: Vec<u8>,
+    seed: u32,
+}
+
+impl StreamBuilder {
+    fn new(heavy: bool) -> Self {
+        Self {
+            heavy,
+            tokens: Vec::new(),
+            runs: Vec::new(),
+            expected: Vec::new(),
+            seed: 0x1234_5678,
+        }
+    }
+
+    fn bytes(&mut self, len: usize) -> Vec<u8> {
+        (0..len)
+            .map(|_| {
+                self.seed = self.seed.wrapping_mul(1_103_515_245).wrapping_add(12_345);
+                (self.seed >> 24) as u8
+            })
+            .collect()
+    }
+
+    /// Append a token. A match that reaches before the output start is
+    /// encoded as given; its expected bytes are zeros.
+    fn token(&mut self, lit_len: usize, match_len: usize, dis: usize) {
+        let lits = self.bytes(lit_len);
+        if self.heavy {
+            let code = HEAVY_LEN_OF
+                .iter()
+                .position(|&len| len as usize == match_len)
+                .unwrap();
+            let field = lit_len.min(HEAVY_TOKEN_LIT_MAX);
+            self.tokens
+                .extend_from_slice(&heavy_token(field, code, (dis - MIN_DISTANCE) as u32));
+            if field == HEAVY_TOKEN_LIT_MAX {
+                push_extension(&mut self.tokens, lit_len - HEAVY_TOKEN_LIT_MAX);
+            }
+        } else {
+            let field = lit_len.min(TOKEN_LIT_MAX);
+            self.tokens.push(
+                ((field as u8) << TOKEN_MATCH_BITS) | (match_len - (MIN_MATCH_LEN - 1)) as u8,
+            );
+            self.tokens
+                .extend_from_slice(&((dis - MIN_DISTANCE) as u16).to_le_bytes());
+            if field == TOKEN_LIT_MAX {
+                push_literal_extension(&mut self.tokens, lit_len);
+            }
+        }
+        self.expected.extend_from_slice(&lits);
+        self.runs.push(lits);
+        for _ in 0..match_len {
+            let byte = self
+                .expected
+                .len()
+                .checked_sub(dis)
+                .map_or(0, |from| self.expected[from]);
+            self.expected.push(byte);
+        }
+    }
+
+    fn out(&self) -> usize {
+        self.expected.len()
+    }
+
+    /// Finish with a raw suffix. Returns the stream and its output.
+    fn finish(mut self, suffix_len: usize, flags: u8) -> (Vec<u8>, Vec<u8>) {
+        let suffix = self.bytes(suffix_len);
+        self.expected.extend_from_slice(&suffix);
+        let mut stream = heavy_header(self.expected.len(), flags).to_vec();
+        stream.extend_from_slice(&(suffix_len as u64).to_le_bytes());
+        stream.extend_from_slice(&self.tokens);
+        for run in self.runs.iter().rev() {
+            stream.extend_from_slice(run);
+        }
+        stream.extend_from_slice(&suffix);
+        (stream, self.expected)
+    }
+}
+
+fn push_extension(out: &mut Vec<u8>, mut remaining: usize) {
+    while remaining >= 255 {
+        out.push(255);
+        remaining -= 255;
+    }
+    out.push(remaining as u8);
+}
+
+/// Light tokens with every literal-run class (inline, one extension byte,
+/// long) and distances up to the maximum, up to `len` bytes of output.
+/// Runs of 18 group tokens fill whole groups.
+fn light_mixed_stream(len: usize, bad_token_at: Option<usize>) -> (Vec<u8>, Vec<u8>) {
+    const LITS: [usize; 20] = [
+        0, 3, 6, 7, 20, 32, 6, 1, 0, 0, 5, 7, 31, 2, 9, 0, 12, 4, 33, 100,
+    ];
+    const DISTANCES: [usize; 6] = [33, 40, 64, 1000, 30_000, MAX_DISTANCE];
+    let mut stream = StreamBuilder::new(false);
+    stream.token(40, 4, 33);
+    let mut i = 0;
+    while stream.out() < len {
+        let lit_len = LITS[i % LITS.len()];
+        let match_len = 4 + i % 29;
+        let mut dis = DISTANCES[i % DISTANCES.len()].min(stream.out() + lit_len);
+        if bad_token_at == Some(i) {
+            dis = stream.out() + lit_len + 1;
+        }
+        stream.token(lit_len, match_len, dis.max(MIN_DISTANCE));
+        i += 1;
+    }
+    stream.finish(LITERAL_SUFFIX, 0)
+}
+
+#[test]
+fn decompress_light_mixed_tokens_across_prefix() {
+    let (stream, expected) = light_mixed_stream(3 * MAX_DISTANCE / 2, None);
+    assert_eq!(decompress(&stream, expected.len()).unwrap(), expected);
+}
+
+#[test]
+fn decompress_light_rejects_distance_past_output_in_prefix() {
+    let (stream, expected) = light_mixed_stream(3 * MAX_DISTANCE / 2, Some(5));
+    assert_eq!(
+        decompress(&stream, expected.len()),
+        Err(Error::CorruptInput)
+    );
+}
+
+#[test]
+fn decompress_light_mixed_tokens_short_output() {
+    for len in [3000, 20_000, 60_000] {
+        let (stream, expected) = light_mixed_stream(len, None);
+        assert_eq!(decompress(&stream, expected.len()).unwrap(), expected);
+    }
+}
+
+#[test]
+fn decompress_light_rejects_distance_past_output_in_short_output() {
+    for bad in [5, 300] {
+        let (stream, expected) = light_mixed_stream(20_000, Some(bad));
+        assert_eq!(
+            decompress(&stream, expected.len()),
+            Err(Error::CorruptInput)
+        );
+    }
+}
+
+/// Heavy tokens whose first match starts inside its own literals, with
+/// literal runs up to an extension and every match length. Runs of 18
+/// group tokens fill whole groups.
+fn heavy_mixed_stream(len: usize, bad_token_at: Option<usize>) -> (Vec<u8>, Vec<u8>) {
+    const LITS: [usize; 21] = [
+        40, 0, 5, 33, 62, 1, 2, 3, 10, 20, 30, 0, 0, 7, 8, 9, 11, 12, 63, 64, 300,
+    ];
+    const DISTANCES: [usize; 20] = [
+        33,
+        50,
+        1000,
+        100_000,
+        64,
+        40,
+        2000,
+        300,
+        33,
+        77,
+        5000,
+        34,
+        35,
+        600,
+        70_000,
+        90,
+        33,
+        120,
+        4000,
+        HEAVY_MAX_DISTANCE,
+    ];
+    let mut stream = StreamBuilder::new(true);
+    stream.token(40, 4, 33);
+    let mut i = 0;
+    while stream.out() < len {
+        let lit_len = LITS[i % LITS.len()];
+        let match_len = HEAVY_LEN_OF[1 + i % (HEAVY_LEN_OF.len() - 1)] as usize;
+        let mut dis = DISTANCES[i % DISTANCES.len()].min(stream.out() + lit_len);
+        if bad_token_at == Some(i) {
+            dis = stream.out() + lit_len + 1;
+        }
+        stream.token(lit_len, match_len, dis.max(MIN_DISTANCE));
+        i += 1;
+    }
+    stream.finish(HEAVY_LITERAL_SUFFIX, FLAG_HEAVY)
+}
+
+#[test]
+fn decompress_heavy_mixed_tokens() {
+    for flags in [FLAG_HEAVY, FLAG_HEAVY | FLAG_HEAVY_COND] {
+        let (mut stream, expected) = heavy_mixed_stream(300_000, None);
+        stream[7] = flags;
+        assert_eq!(decompress(&stream, expected.len()).unwrap(), expected);
+    }
+}
+
+#[test]
+fn decompress_heavy_rejects_distance_past_output_in_group() {
+    for flags in [FLAG_HEAVY, FLAG_HEAVY | FLAG_HEAVY_COND] {
+        let (mut stream, expected) = heavy_mixed_stream(300_000, Some(100));
+        stream[7] = flags;
+        assert_eq!(
+            decompress(&stream, expected.len()),
+            Err(Error::CorruptInput)
+        );
+    }
+}
+
+#[test]
+fn decompress_heavy_rejects_zero_match_code_in_group() {
+    let (mut stream, expected) = heavy_mixed_stream(300_000, None);
+    // Clear the match code of a token deep in the token stream. The tokens
+    // before it have no extensions.
+    let token = EXT_HEADER_SIZE + 4 * 5;
+    let mut header = u32::from_le_bytes(stream[token..token + 4].try_into().unwrap());
+    assert_ne!(header >> 26, HEAVY_TOKEN_LIT_MAX as u32);
+    header &= !(0x3F << 20);
+    stream[token..token + 4].copy_from_slice(&header.to_le_bytes());
+    assert_eq!(
+        decompress(&stream, expected.len()),
+        Err(Error::CorruptInput)
+    );
+}
+
+/// Long enough for the window over the first MiB, the gap after it, and
+/// the window that slides behind the maximum distance.
+const PAST_MAX_DISTANCE: usize = HEAVY_MAX_DISTANCE + 100_000;
+
+#[test]
+fn decompress_heavy_mixed_tokens_past_max_distance() {
+    for flags in [FLAG_HEAVY, FLAG_HEAVY | FLAG_HEAVY_COND] {
+        let (mut stream, expected) = heavy_mixed_stream(PAST_MAX_DISTANCE, None);
+        stream[7] = flags;
+        assert_eq!(decompress(&stream, expected.len()).unwrap(), expected);
+    }
+}
+
+#[test]
+fn decompress_heavy_rejects_distance_past_output_in_start_window() {
+    for flags in [FLAG_HEAVY, FLAG_HEAVY | FLAG_HEAVY_COND] {
+        let (mut stream, expected) = heavy_mixed_stream(PAST_MAX_DISTANCE, Some(100));
+        stream[7] = flags;
+        assert_eq!(
+            decompress(&stream, expected.len()),
+            Err(Error::CorruptInput)
+        );
+    }
 }

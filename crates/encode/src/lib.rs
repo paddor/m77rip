@@ -1,28 +1,16 @@
-#![deny(unsafe_op_in_unsafe_fn)]
-#![cfg_attr(feature = "paranoid", forbid(unsafe_code))]
+//! misa77 block compression.
 
-#[cfg(not(feature = "paranoid"))]
-#[allow(unused_macros)]
-macro_rules! paranoid_unsafe_call {
-    ($e:expr) => {
-        // SAFETY: Default encoder call sites document and enforce each unsafe
-        // primitive contract before invoking this macro.
-        unsafe { $e }
-    };
-}
+#![forbid(unsafe_code)]
 
-#[cfg(feature = "paranoid")]
-#[allow(unused_macros)]
-macro_rules! paranoid_unsafe_call {
-    ($e:expr) => {
-        $e
-    };
-}
-
-mod encode;
+mod compress;
+mod heavy;
+mod light;
+mod read;
+mod sa;
 mod sais;
+mod stream;
 
-pub use encode::{
+pub use compress::{
     compress, compress_bound, compress_bound_level, compress_into, compress_into_level,
     compress_level,
 };

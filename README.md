@@ -9,6 +9,9 @@ It trades compression speed for extremely fast single-threaded decompression
 (1.5-2x faster than LZ4) via a split-stream layout that separates control
 tokens from literal data.
 
+m77rip is safe Rust: every crate is `#![forbid(unsafe_code)]`. See
+[SAFETY.md](SAFETY.md).
+
 ## Usage
 
 ```rust
@@ -38,7 +41,7 @@ assert_eq!(written, size);
 |---------|---------|-------------|
 | `std` | yes | Standard library. Enables runtime SIMD detection and `std::error::Error` impl. |
 | `alloc` | yes (via `std`) | Enables `decompress()` which returns a `Vec<u8>`. |
-| `paranoid` | no | Forbids unsafe in m77rip encode/decode crates. Local primitives use bounds-checked operations. Suffix sorting uses the safe `libsais` API. |
+| `paranoid` | no | No effect. Any future `unsafe` code stays out of builds with it. |
 | `c-reference` | no | Builds the vendored C++ reference implementation for benchmarking. |
 
 ## Performance
@@ -53,27 +56,14 @@ better.
 
 ![m77rip x86_64 performance summary](https://raw.githubusercontent.com/paddor/m77rip/main/doc/charts/x86_64/summary.svg)
 
-### Default build
-
 | Level | Encode MB/s (vs misa77) | Decode MB/s (vs misa77) | Ratio (vs misa77) |
 |-------|--------------------------|--------------------------|-------------------|
-| `-1` | 258 (0.90x) | 5436 (0.91x) | 1.955 (1.00x) |
-| `0` | 187 (0.94x) | 5847 (0.91x) | 2.052 (1.00x) |
-| `1` | 57.4 (0.97x) | 6641 (0.90x) | 2.169 (1.00x) |
-| `2` | 47.1 (1.05x) | 5296 (0.89x) | 2.294 (1.00x) |
-| `3` | 16.8 (1.70x) | 5073 (0.87x) | 2.440 (0.99x) |
-| `4` | 12.9 (1.45x) | 4059 (0.88x) | 2.525 (1.00x) |
-
-### Paranoid build (`--features paranoid`, no unsafe in m77rip crates)
-
-| Level | Encode MB/s (vs misa77) | Decode MB/s (vs misa77) | Ratio (vs misa77) |
-|-------|--------------------------|--------------------------|-------------------|
-| `-1` | 210 (0.73x) | 2611 (0.44x) | 1.955 (1.00x) |
-| `0` | 148 (0.75x) | 2406 (0.37x) | 2.052 (1.00x) |
-| `1` | 53.8 (0.91x) | 2600 (0.35x) | 2.169 (1.00x) |
-| `2` | 41.5 (0.93x) | 2074 (0.35x) | 2.294 (1.00x) |
-| `3` | 13.9 (1.40x) | 1926 (0.33x) | 2.440 (0.99x) |
-| `4` | 9.8 (1.10x) | 1038 (0.22x) | 2.525 (1.00x) |
+| `-1` | 290 (1.03x) | 5599 (0.94x) | 1.955 (1.00x) |
+| `0` | 188 (0.97x) | 6055 (0.94x) | 2.052 (1.00x) |
+| `1` | 55.6 (0.95x) | 6708 (0.91x) | 2.169 (1.00x) |
+| `2` | 43.1 (0.97x) | 5542 (0.93x) | 2.294 (1.00x) |
+| `3` | 16.3 (1.58x) | 5300 (0.91x) | 2.440 (0.99x) |
+| `4` | 12.3 (1.55x) | 4362 (0.96x) | 2.525 (1.00x) |
 
 ## `no_std` and 32-bit support
 

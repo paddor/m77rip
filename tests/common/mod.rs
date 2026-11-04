@@ -28,32 +28,32 @@ fn json_payload(target_bytes: usize) -> Vec<u8> {
     out
 }
 
-pub static COMPRESSION1K: std::sync::LazyLock<Vec<u8>> =
+pub(crate) static COMPRESSION1K: std::sync::LazyLock<Vec<u8>> =
     std::sync::LazyLock::new(|| text_payload(725));
-pub static COMPRESSION34K: std::sync::LazyLock<Vec<u8>> =
+pub(crate) static COMPRESSION34K: std::sync::LazyLock<Vec<u8>> =
     std::sync::LazyLock::new(|| text_payload(34_308));
-pub static COMPRESSION65: std::sync::LazyLock<Vec<u8>> =
+pub(crate) static COMPRESSION65: std::sync::LazyLock<Vec<u8>> =
     std::sync::LazyLock::new(|| text_payload(64_723));
-pub static COMPRESSION66JSON: std::sync::LazyLock<Vec<u8>> =
+pub(crate) static COMPRESSION66JSON: std::sync::LazyLock<Vec<u8>> =
     std::sync::LazyLock::new(|| json_payload(66_675));
 
-pub fn compression1k() -> &'static [u8] {
+pub(crate) fn compression1k() -> &'static [u8] {
     &COMPRESSION1K
 }
 
-pub fn compression34k() -> &'static [u8] {
+pub(crate) fn compression34k() -> &'static [u8] {
     &COMPRESSION34K
 }
 
-pub fn compression65() -> &'static [u8] {
+pub(crate) fn compression65() -> &'static [u8] {
     &COMPRESSION65
 }
 
-pub fn compression66json() -> &'static [u8] {
+pub(crate) fn compression66json() -> &'static [u8] {
     &COMPRESSION66JSON
 }
 
-pub fn test_roundtrip(bytes: impl AsRef<[u8]>) {
+pub(crate) fn test_roundtrip(bytes: impl AsRef<[u8]>) {
     let bytes = bytes.as_ref();
     let compressed = compress(bytes);
     let decompressed = decompress(&compressed, bytes.len()).unwrap();

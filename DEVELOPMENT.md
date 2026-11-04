@@ -16,8 +16,17 @@ cargo run --manifest-path fuzz/Cargo.toml --bin fuzz_decomp_corrupt -- -runs=100
 cargo run --manifest-path fuzz/Cargo.toml --bin fuzz_cpp_compress -- -runs=10000
 ```
 
-Benchmark only after tests, lint, and formatting pass. See `CLAUDE.md` for
-benchmark commands and corpus details.
+Benchmark only after tests, lint, and formatting pass:
+
+```sh
+cargo run --release --example m77rip_bench --features c-reference
+cargo run --release --example m77rip_bench --features c-reference -- --impl m77rip --files dickens,xml
+cargo run --release --example profile_decompress --features c-reference -- m77rip dickens 2000 0
+```
+
+The benchmark downloads the Silesia corpus into `corpus/silesia/` and caches
+results per codec in `~/.cache/m77rip/<arch>/<codec>.jsonl`. `--impl` reruns
+only matching codecs; the rest come from the cache.
 
 Generate charts from cached benchmark results:
 

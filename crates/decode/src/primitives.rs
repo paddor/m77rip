@@ -1,274 +1,100 @@
-//! Low-level memory primitives for decompression.
+//! Fixed-size chunk copies and shared stream helpers.
 //!
-//! Each operation has two implementations selected at compile time. The default
-//! build uses unchecked pointer operations for speed; these functions are
-//! `unsafe fn` because callers must uphold bounds preconditions documented in
-//! each function's `debug_assert!` guards. The `paranoid` feature provides safe
-//! `fn` twins with no preconditions (violations panic via bounds checks).
+//! Copies move `[u8; N]` chunks, so each chunk costs at most one bounds check
+//! and the compiler emits plain vector loads and stores. A chunk is loaded
+//! completely before it is stored. Wild copies write up to one chunk past
+//! the requested length; callers reserve that slack.
 
-#[cfg(all(not(feature = "paranoid"), target_arch = "x86_64"))]
-use core::arch::x86_64::{__m256i, _mm256_loadu_si256, _mm256_storeu_si256};
+use m77rip_core::Error;
+use m77rip_core::format::VECTOR_WIDTH;
 
-/// Read 1 byte without bounds checking.
-///
-/// # Safety
-///
-/// `pos` must be within `src`.
-#[cfg(not(feature = "paranoid"))]
+/// Width of literal and match chunk copies.
+pub(crate) const CHUNK: usize = VECTOR_WIDTH;
+
+/// Literal runs longer than this use one exact copy instead of chunks.
+const LONG_LITERALS: usize = 2 * CHUNK;
+
+/// Load `N` bytes of `buf` at `at`.
 #[inline(always)]
-pub(crate) unsafe fn read_byte(src: &[u8], pos: usize) -> u8 {
-    debug_assert!(pos < src.len());
-    // SAFETY: Caller guarantees `pos < src.len()`.
-    unsafe { *src.as_ptr().add(pos) }
+pub(crate) fn load<const N: usize>(buf: &[u8], at: usize) -> [u8; N] {
+    buf[at..at + N].try_into().unwrap()
 }
 
-/// Read 1 byte (paranoid: bounds-checked).
-#[cfg(feature = "paranoid")]
+/// Store `N` bytes into `buf` at `at`.
 #[inline(always)]
-pub(crate) fn read_byte(src: &[u8], pos: usize) -> u8 {
-    src[pos]
+pub(crate) fn store<const N: usize>(buf: &mut [u8], at: usize, chunk: [u8; N]) {
+    buf[at..at + N].copy_from_slice(&chunk);
 }
 
-/// Read 2 bytes as little-endian u16 without bounds checking.
-///
-/// # Safety
-///
-/// `pos + 2` must be within `src`.
-#[cfg(not(feature = "paranoid"))]
+/// Copy `N` bytes within `buf` from `from` to `to`, loading before storing.
 #[inline(always)]
-pub(crate) unsafe fn read_u16_le(src: &[u8], pos: usize) -> u16 {
-    debug_assert!(pos + 2 <= src.len());
-    // SAFETY: Caller guarantees two readable bytes starting at `pos`.
-    u16::from_le(unsafe { (src.as_ptr().add(pos) as *const u16).read_unaligned() })
+pub(crate) fn copy_chunk<const N: usize>(buf: &mut [u8], from: usize, to: usize) {
+    let chunk = load::<N>(buf, from);
+    store(buf, to, chunk);
 }
 
-/// Read 2 bytes as little-endian u16 (paranoid: bounds-checked).
-#[cfg(feature = "paranoid")]
+/// Borrow `N` bytes of `buf` at `at` as an array, so offsets into it that
+/// the compiler can bound need no checks.
 #[inline(always)]
-pub(crate) fn read_u16_le(src: &[u8], pos: usize) -> u16 {
-    u16::from_le_bytes(src[pos..pos + 2].try_into().unwrap())
+pub(crate) fn array<const N: usize>(buf: &[u8], at: usize) -> &[u8; N] {
+    buf[at..at + N].try_into().unwrap()
 }
 
-/// Read 4 bytes as little-endian u32 without bounds checking.
-///
-/// # Safety
-///
-/// `pos + 4` must be within `src`.
-#[cfg(not(feature = "paranoid"))]
+/// Mutable [`array`].
 #[inline(always)]
-pub(crate) unsafe fn read_u32_le(src: &[u8], pos: usize) -> u32 {
-    debug_assert!(pos + 4 <= src.len());
-    // SAFETY: Caller guarantees four readable bytes starting at `pos`.
-    u32::from_le(unsafe { (src.as_ptr().add(pos) as *const u32).read_unaligned() })
+pub(crate) fn array_mut<const N: usize>(buf: &mut [u8], at: usize) -> &mut [u8; N] {
+    (&mut buf[at..at + N]).try_into().unwrap()
 }
 
-/// Read 4 bytes as little-endian u32 (paranoid: bounds-checked).
-#[cfg(feature = "paranoid")]
+/// Read a literal length extension: bytes of 255 continue, the first smaller
+/// byte ends it. Extension bytes must lie before `limit`.
 #[inline(always)]
-pub(crate) fn read_u32_le(src: &[u8], pos: usize) -> u32 {
-    u32::from_le_bytes(src[pos..pos + 4].try_into().unwrap())
-}
-
-/// Copy exactly `len` bytes from `src[src_pos..]` to `dst[dst_pos..]`.
-///
-/// # Safety
-///
-/// Both ranges must be within their slices and must not overlap.
-#[cfg(not(feature = "paranoid"))]
-#[inline(always)]
-pub(crate) unsafe fn copy_from_src(
+pub(crate) fn read_extension(
     src: &[u8],
-    src_pos: usize,
-    dst: &mut [u8],
-    dst_pos: usize,
-    len: usize,
-) {
-    debug_assert!(src_pos + len <= src.len());
-    debug_assert!(dst_pos + len <= dst.len());
-    // SAFETY: Caller guarantees both ranges are valid and non-overlapping.
-    unsafe {
-        core::ptr::copy_nonoverlapping(
-            src.as_ptr().add(src_pos),
-            dst.as_mut_ptr().add(dst_pos),
-            len,
-        );
+    control: &mut usize,
+    limit: usize,
+) -> Result<usize, Error> {
+    let mut total = 0usize;
+    loop {
+        if *control >= limit {
+            return Err(Error::CorruptInput);
+        }
+        let byte = src[*control];
+        *control += 1;
+        total = total
+            .checked_add(usize::from(byte))
+            .ok_or(Error::CorruptInput)?;
+        if byte != u8::MAX {
+            return Ok(total);
+        }
     }
 }
 
-/// Copy exactly `len` bytes (paranoid: bounds-checked).
-#[cfg(feature = "paranoid")]
+/// Copy `len` literal bytes from `src[from..]` to `dst[to..]`.
+///
+/// Short runs copy whole chunks, so both sides need `CHUNK` bytes of slack
+/// past `len`.
 #[inline(always)]
-pub(crate) fn copy_from_src(
-    src: &[u8],
-    src_pos: usize,
-    dst: &mut [u8],
-    dst_pos: usize,
-    len: usize,
-) {
-    dst[dst_pos..dst_pos + len].copy_from_slice(&src[src_pos..src_pos + len]);
-}
-
-/// Unconditional 16-byte literal copy from `src` to `dst`.
-///
-/// Default build copies exactly 16 bytes regardless of `actual_len` (caller
-/// guarantees overwrite room). Paranoid build copies exactly 16 bytes with
-/// bounds checks.
-///
-/// # Safety
-///
-/// Both 16-byte ranges must be within their slices and must not overlap.
-#[cfg(not(feature = "paranoid"))]
-#[inline(always)]
-pub(crate) unsafe fn wild_copy_literals_16(
-    src: &[u8],
-    src_pos: usize,
-    dst: &mut [u8],
-    dst_pos: usize,
-    _actual_len: usize,
-) {
-    debug_assert!(src_pos + 16 <= src.len());
-    debug_assert!(dst_pos + 16 <= dst.len());
-    // SAFETY: Caller guarantees both fixed-size ranges are valid and
-    // non-overlapping.
-    unsafe {
-        core::ptr::copy_nonoverlapping(
-            src.as_ptr().add(src_pos),
-            dst.as_mut_ptr().add(dst_pos),
-            16,
-        );
+pub(crate) fn copy_literals(src: &[u8], from: usize, dst: &mut [u8], to: usize, len: usize) {
+    if len > LONG_LITERALS {
+        dst[to..to + len].copy_from_slice(&src[from..from + len]);
+        return;
+    }
+    store(dst, to, load::<CHUNK>(src, from));
+    if len > CHUNK {
+        store(dst, to + CHUNK, load::<CHUNK>(src, from + CHUNK));
     }
 }
 
-/// Unconditional 16-byte literal copy (paranoid: bounds-checked, fixed-size).
-#[cfg(feature = "paranoid")]
+/// Copy a match of `len` bytes from `dis` bytes back to `to`, in whole
+/// chunks. Needs `dis > CHUNK` and `CHUNK` bytes of slack past `to + len`.
+/// Chunks run forward, so a match that overlaps its source repeats it.
 #[inline(always)]
-pub(crate) fn wild_copy_literals_16(
-    src: &[u8],
-    src_pos: usize,
-    dst: &mut [u8],
-    dst_pos: usize,
-    _actual_len: usize,
-) {
-    dst[dst_pos..dst_pos + 16].copy_from_slice(&src[src_pos..src_pos + 16]);
-}
-
-#[cfg(feature = "paranoid")]
-#[inline(always)]
-pub(crate) fn wild_copy_literals_16_slices(src: &[u8], dst: &mut [u8]) {
-    dst[..16].copy_from_slice(&src[..16]);
-}
-
-/// Unconditional 32-byte literal copy from `src` to `dst`.
-///
-/// # Safety
-///
-/// Both 32-byte ranges must be within their slices and must not overlap.
-#[cfg(not(feature = "paranoid"))]
-#[inline(always)]
-pub(crate) unsafe fn wild_copy_literals_32(
-    src: &[u8],
-    src_pos: usize,
-    dst: &mut [u8],
-    dst_pos: usize,
-) {
-    debug_assert!(src_pos + 32 <= src.len());
-    debug_assert!(dst_pos + 32 <= dst.len());
-    // SAFETY: Caller guarantees both fixed-size ranges are valid and
-    // non-overlapping.
-    unsafe {
-        core::ptr::copy_nonoverlapping(
-            src.as_ptr().add(src_pos),
-            dst.as_mut_ptr().add(dst_pos),
-            32,
-        );
+pub(crate) fn copy_match(dst: &mut [u8], to: usize, dis: usize, len: usize) {
+    debug_assert!(dis > CHUNK);
+    let mut copied = 0;
+    while copied < len {
+        copy_chunk::<CHUNK>(dst, to - dis + copied, to + copied);
+        copied += CHUNK;
     }
-}
-
-/// AVX2 32-byte literal copy from `src` to `dst`.
-///
-/// # Safety
-///
-/// CPU must support AVX2. Both 32-byte ranges must be within their slices and
-/// must not overlap.
-#[cfg(all(not(feature = "paranoid"), target_arch = "x86_64"))]
-#[inline(always)]
-pub(crate) unsafe fn avx2_copy_literals_32(
-    src: &[u8],
-    src_pos: usize,
-    dst: &mut [u8],
-    dst_pos: usize,
-) {
-    debug_assert!(src_pos + 32 <= src.len());
-    debug_assert!(dst_pos + 32 <= dst.len());
-    // SAFETY: Caller guarantees AVX2 support plus valid non-overlapping ranges.
-    let reg = unsafe { _mm256_loadu_si256(src.as_ptr().add(src_pos).cast::<__m256i>()) };
-    // SAFETY: Caller guarantees 32 writable bytes at `dst_pos`.
-    unsafe { _mm256_storeu_si256(dst.as_mut_ptr().add(dst_pos).cast::<__m256i>(), reg) };
-}
-
-/// Unconditional 32-byte non-overlapping match copy within `dst`.
-///
-/// Default build copies exactly 32 bytes (caller guarantees `dis >= 33` and
-/// overwrite room from suffix padding). Paranoid build copies exactly 32 bytes
-/// with bounds checks via `copy_within`.
-///
-/// # Safety
-///
-/// Both 32-byte ranges must be within `dst` and must not overlap.
-#[cfg(not(feature = "paranoid"))]
-#[inline(always)]
-pub(crate) unsafe fn wild_copy_match_32(
-    dst: &mut [u8],
-    src_pos: usize,
-    dst_pos: usize,
-    _actual_len: usize,
-) {
-    debug_assert!(dst_pos >= src_pos + 33);
-    debug_assert!(dst_pos + 32 <= dst.len());
-    // SAFETY: Caller guarantees both fixed-size ranges are valid and
-    // non-overlapping. The distance invariant prevents overlap.
-    unsafe {
-        let ptr = dst.as_mut_ptr();
-        core::ptr::copy_nonoverlapping(ptr.add(src_pos), ptr.add(dst_pos), 32);
-    }
-}
-
-/// AVX2 32-byte non-overlapping match copy within `dst`.
-///
-/// # Safety
-///
-/// CPU must support AVX2. Both 32-byte ranges must be within `dst` and must not
-/// overlap.
-#[cfg(all(not(feature = "paranoid"), target_arch = "x86_64"))]
-#[inline(always)]
-pub(crate) unsafe fn avx2_copy_match_32(dst: &mut [u8], src_pos: usize, dst_pos: usize) {
-    debug_assert!(dst_pos >= src_pos + 33);
-    debug_assert!(dst_pos + 32 <= dst.len());
-    // SAFETY: Caller guarantees valid non-overlapping ranges and AVX2 support.
-    unsafe {
-        let ptr = dst.as_mut_ptr();
-        let reg = _mm256_loadu_si256(ptr.add(src_pos).cast::<__m256i>());
-        _mm256_storeu_si256(ptr.add(dst_pos).cast::<__m256i>(), reg);
-    }
-}
-
-/// Unconditional 32-byte non-overlapping match copy (paranoid: bounds-checked,
-/// fixed-size). Uses `split_at_mut` to prove non-overlap to the compiler,
-/// enabling memcpy codegen instead of memmove.
-#[cfg(feature = "paranoid")]
-#[inline(always)]
-pub(crate) fn wild_copy_match_32(
-    dst: &mut [u8],
-    src_pos: usize,
-    dst_pos: usize,
-    _actual_len: usize,
-) {
-    let (left, right) = dst.split_at_mut(dst_pos);
-    right[..32].copy_from_slice(&left[src_pos..src_pos + 32]);
-}
-
-#[cfg(feature = "paranoid")]
-#[inline(always)]
-pub(crate) fn wild_copy_match_32_slices(src: &[u8], dst: &mut [u8]) {
-    dst[..32].copy_from_slice(&src[..32]);
 }

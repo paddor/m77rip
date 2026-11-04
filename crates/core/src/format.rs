@@ -28,7 +28,7 @@ pub const FLAG_HEAVY_COND: u8 = 1 << 1;
 /// Inputs at or below this size are stored raw (no compression).
 pub const SMALL_LIM: usize = 32;
 
-/// Hash table insertion lag. Ensures minimum match distance >= HASHTAB_LAG + 1,
+/// Hash table insertion lag. Ensures minimum match distance >= `HASHTAB_LAG` + 1,
 /// which guarantees match copies never overlap.
 pub const HASHTAB_LAG: usize = 32;
 
@@ -56,10 +56,10 @@ pub const TOKEN_LIT_MAX: usize = (1 << TOKEN_LIT_BITS) - 1; // 7
 /// Mask for the match length field in a token byte.
 pub const TOKEN_MATCH_MASK: u8 = (1 << TOKEN_MATCH_BITS) - 1; // 0x1F
 
-/// Size of the stream header: 8-byte original_size.
+/// Size of the stream header: 8-byte `original_size`.
 pub const HEADER_SIZE: usize = 8;
 
-/// Size of the extended header (original_size + literal_suffix_cnt).
+/// Size of the extended header (`original_size` + `literal_suffix_cnt`).
 pub const EXT_HEADER_SIZE: usize = 16;
 
 /// Minimum match distance.
@@ -147,3 +147,6 @@ const fn heavy_code_floor_table() -> [u8; 256] {
     }
     table
 }
+
+#[cfg(test)]
+mod tests;
