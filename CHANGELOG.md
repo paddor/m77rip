@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## [Unreleased]
+## [0.1.9] - 2026-11-04
 
 - Removed all `unsafe` code. Every crate is `#![forbid(unsafe_code)]`.
   `paranoid` stays as a no-op feature.
@@ -18,6 +18,11 @@ All notable changes to this project will be documented in this file.
   0.89x to 0.99x the speed of the former default build and up to 1.21x
   that of the former paranoid build.
 - Dropped the Kani harnesses and the paranoid benchmark and chart rows.
+
+## [0.1.8] - 2026-07-31
+
+- Added the x86_64 benchmark summary chart to the README with an absolute
+  image URL so it renders on crates.io.
 
 ## [0.1.7] - 2026-07-30
 
