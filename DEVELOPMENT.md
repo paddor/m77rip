@@ -45,3 +45,23 @@ Use `.chart_hw` for local-only subtitle labels:
 prefix=local machine name
 postfix=performance governor,turbo off
 ```
+
+## Releasing
+
+`release-plz` runs on every push to `main`
+(`.github/workflows/release-plz.yml`). It opens or updates a release PR,
+creates annotated tags after merge, publishes to crates.io, and creates
+GitHub releases. Configuration lives in `release-plz.toml`. All four crates
+share one version (`version_group`) and the root `CHANGELOG.md`.
+
+Publishing uses crates.io trusted publishing through GitHub Actions OIDC.
+Do not add a crates.io token secret.
+
+1. **Review the release-plz PR.** Verify the semver bump and dependency
+   versions.
+2. **Curate the changelog.** Insert a new `## [x.y.z] - YYYY-MM-DD` section
+   immediately below `## [Unreleased]` and move the release notes there.
+   Never rename or modify an existing versioned section.
+3. **Merge the release PR after CI passes.** Monitor `release-plz` for crate
+   publication.
+4. **Confirm publication.** Verify all four crate versions on crates.io.

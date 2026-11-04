@@ -1,0 +1,20 @@
+[workspace]
+changelog_update = false
+changelog_path = "CHANGELOG.md"
+git_tag_name = "{{ package }}-v{{ version }}"
+
+[[package]]
+name = "m77rip"
+version_group = "m77rip"
+
+[[package]]
+name = "m77rip-core"
+version_group = "m77rip"
+
+[[package]]
+name = "m77rip-encode"
+version_group = "m77rip"
+
+[[package]]
+name = "m77rip-decode"
+version_group = "m77rip"

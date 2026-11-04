@@ -146,6 +146,8 @@ Tests:
   numbers there.
 - `CHANGELOG.md`: extend `## [Unreleased]` only. Never edit a released
   section.
+- Releases go through the release-plz PR (see `DEVELOPMENT.md`). Do not
+  publish to crates.io by hand.
 - Rust 2024 edition, MSRV 1.89. ASCII-only source.
 - `info/` is gitignored. It holds `M77-PERF.md` (misa77 optimization catalog
   and `perf stat` numbers) and `performance.md` (optimization journal).
